@@ -68,6 +68,7 @@ ReadyPredicate = Callable[[], bool]
 MessageCallback = Callable[[dict], None]
 EofCallback = Callable[[], None]
 TickCallback = Callable[[], None]
+LineHandler = Callable[[str], Optional[dict]]
 
 
 def run(
@@ -78,6 +79,7 @@ def run(
     encoder: Encoder = encode_user_message_chunks,
     initial_messages: Optional[Iterable[dict]] = None,
     send_initial_when: Optional[ReadyPredicate] = None,
+    on_stdin_line: Optional[LineHandler] = None,
     on_user_message: Optional[MessageCallback] = None,
     on_stdin_eof: Optional[EofCallback] = None,
     on_iteration: Optional[TickCallback] = None,
@@ -111,6 +113,14 @@ def run(
     ``initial_messages`` are encoded and written to the pty as soon as
     ``send_initial_when`` (if given) returns True, or immediately if no
     gate predicate is provided. They are sent exactly once.
+
+    ``on_stdin_line`` hands the caller each stdin line before this loop does
+    anything with it, and the caller returns the message to queue for the
+    pty — or ``None`` to queue nothing. It is what lets a caller speak a
+    stdin protocol that is not "every line is a prompt": agent-proxy answers
+    a `status` command itself and reports a malformed line as an `error`,
+    neither of which may reach the inner claude's keyboard. Without it, the
+    loop parses the line as JSON and queues it as-is.
 
     ``activity``, if supplied, is a caller-owned dict this loop reads/writes
     in place — pass the same dict a caller's own callbacks (e.g. transcript
@@ -157,6 +167,16 @@ def run(
     now0 = time.monotonic()
     activity.setdefault("last_pty", now0)
     activity.setdefault("last_activity", now0)
+
+    # Partial stdin line, held until its newline arrives. Stdin is read with
+    # `os.read` on the raw fd rather than `readline()`, and that is not a
+    # style choice: `readline()` on a buffered stream pulls the whole
+    # available chunk into Python's own buffer and hands back one line. The
+    # rest is then invisible to `select`, which watches the fd, so a second
+    # message sent in the same write sits unread until *more* bytes arrive —
+    # observed as a queued prompt stranded for 100 s until the client closed
+    # the pipe. Splitting the lines here keeps the fd the only buffer.
+    stdin_buffer = b""
 
     sel = selectors.DefaultSelector()
     sel.register(driver.fd, selectors.EVENT_READ, "pty")
@@ -282,6 +302,26 @@ def run(
             else:
                 i += 1
 
+    def _take_line(raw: bytes) -> None:
+        """Turn one complete stdin line into a queued message, if it is one."""
+        stripped = raw.strip()
+        if not stripped:
+            return
+        text = stripped.decode("utf-8", errors="replace")
+        log.log_text("stdin.in", text)
+        if on_stdin_line is not None:
+            msg = on_stdin_line(text)
+            if msg is not None:
+                pending_messages.append(msg)
+            return
+        try:
+            msg = json.loads(stripped)
+        except json.JSONDecodeError:
+            # Invalid JSON on stdin is ignored here; a caller that wants to
+            # report it takes `on_stdin_line` instead.
+            return
+        pending_messages.append(msg)
+
     def _should_stop() -> bool:
         # Don't honour stop_when while there's still outbound traffic
         # queued: messages waiting for is_idle, a submit CR still waiting
@@ -336,8 +376,10 @@ def run(
                     model.feed(data)
                 elif tag == "stdin":
                     assert stdin is not None
-                    line = stdin.readline()
-                    if not line:
+                    chunk = os.read(stdin.fileno(), 65536)
+                    if not chunk:
+                        _take_line(stdin_buffer)
+                        stdin_buffer = b""
                         sel.unregister(stdin)
                         stdin_open = False
                         if on_stdin_eof is not None:
@@ -346,17 +388,10 @@ def run(
                         # drain into model.feed before the caller's stop_when
                         # or pty EOF takes us out.
                         continue
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    log.log_text("stdin.in", stripped.decode("utf-8", errors="replace"))
-                    try:
-                        msg = json.loads(stripped)
-                    except json.JSONDecodeError:
-                        # Invalid JSON on stdin is ignored here; the proxy
-                        # surfaces it as an `error` message.
-                        continue
-                    pending_messages.append(msg)
+                    stdin_buffer += chunk
+                    while b"\n" in stdin_buffer:
+                        line, stdin_buffer = stdin_buffer.split(b"\n", 1)
+                        _take_line(line)
                 elif tag == "signal":
                     try:
                         os.read(sig_r, 4096)

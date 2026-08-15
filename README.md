@@ -12,13 +12,35 @@ the code-level plan.
 
 ## Status
 
-Phase 1. `TurnTracker` is complete and verified against a recorded session;
-there is no live wrapping yet, so `agent-proxy` itself does not run. What
-works today is replay:
+Phase 2. It runs:
 
 ```bash
-python3 -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-drained
+echo '{"type":"submit","text":"Reply with exactly: PONG"}' | agent-proxy
 ```
+
+```json
+{"seq": 1, "type": "ready", "outstanding": {"user": 0, "unowned": 0, "background": 0}, "session_id": "…"}
+{"seq": 2, "type": "ack", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0}}
+{"seq": 3, "type": "turn_start", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0}}
+{"seq": 4, "type": "text", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0}, "text": "PONG"}
+{"seq": 5, "type": "turn_end", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 0, "unowned": 0, "background": 0}, "basis": "marker:turn_duration", "outcome": "success", "usage": {"duration_ms": 1670, "output_tokens": 5}}
+```
+
+Unrecognised arguments go through to the inner `claude`, so `agent-proxy
+--resume <uuid>` and `agent-proxy --model opus` work as expected. Set
+`AGENTPROXY_LOG=/path/to/file` to record the pty bytes, the stdin lines and
+the state transitions behind the stream.
+
+Not yet done: neither client has migrated, so bzdash and ADE still spawn
+claudejson.
+
+## Commands
+
+| What you want | Command |
+|---|---|
+| a prompt answered | `{"type": "submit", "text": "…"}` on stdin |
+| authoritative state, any time | `{"type": "status"}` on stdin |
+| the tracker against a recorded session, no `claude` | `python3 -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-drained` |
 
 ## What it emits
 
@@ -39,6 +61,12 @@ tied to the background command whose completion woke it.
 |---|---|
 | `src/agentproxy/turn_tracker.py` | the turn table, the task table, binding and end-of-turn |
 | `src/agentproxy/protocol.py` | the envelope and the stdout writer |
+| `src/agentproxy/proxy.py` | the wiring — every decision, no process IO |
+| `src/agentproxy/cli.py` | the process boundary — pty, transcript, stdout, signals |
+| `src/agentproxy/liveness.py` | idle or active, settled, and the two dialogs that block input |
+| `src/agentproxy/fallback.py` | ending a turn that no marker closed |
+| `src/agentproxy/submit_queue.py` | accepted prompts, typed one at a time |
+| `src/agentproxy/inner_claude.py` | argv, env and session id for the inner spawn |
 | `src/agentproxy/replay.py` | replay a recorded transcript, with no live `claude` |
 | `src/agentproxy/{pty_driver,io_loop,screen_model,input_encoder,transcript_tailer,ids,log}.py` | inherited from claudejson |
 | `tools/make_synthetic_fixture.py` | build the test session out of real entry shapes |
@@ -52,8 +80,17 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-Tests need no `claude` binary. The `live` and `slow` markers are opt-in, as in
-claudejson.
+122 tests, none of which needs a `claude` binary. Two more do, and are opt-in
+twice over — a marker alone deselects nothing on a bare `pytest`, and these
+spend real quota:
+
+```bash
+AGENTPROXY_RUN_LIVE=1 pytest -q -m live
+```
+
+Worth running when `claude` changes version: it is the only test that reads
+the entry shapes the installed binary actually writes, rather than the ones
+the fixtures model.
 
 ## Fixtures
 

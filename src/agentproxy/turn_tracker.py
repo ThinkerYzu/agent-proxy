@@ -159,12 +159,14 @@ class TurnTracker:
         self._typed_turn = turn
 
     def fail_session(self, reason: str) -> list[dict]:
-        """End every unfinished turn after the inner `claude` died or errored.
+        """End everything unfinished after the inner `claude` died or errored.
 
         Closes the running turn and everything queued behind it with an
         `error` outcome, so no counter is stranded above zero and no client
-        waits on an id that will never complete. Returns an `error` message
-        followed by one `turn_end` per turn it closed.
+        waits on an id that will never complete. Background tasks go too:
+        they were children of the inner `claude`, so nothing survives to
+        report their completion. Returns an `error` message followed by one
+        `turn_end` per turn and one `task_end` per task it closed.
         """
         events: list[dict] = [{"type": "error", "error": reason}]
         if self._running_turn is not None:
@@ -173,6 +175,12 @@ class TurnTracker:
         for turn in list(self._turns.values()):
             if turn.state != STATE_ENDED:
                 events += self._end_turn(turn, BASIS_ERROR, OUTCOME_ERROR)
+        for task in self._tasks.values():
+            if task.state != TASK_DONE:
+                task.state = TASK_DONE
+                events.append(
+                    {"type": "task_end", "task": {"id": task.id}, "exit_code": None}
+                )
         self._typed_turn = None
         return events
 
@@ -258,6 +266,16 @@ class TurnTracker:
     @property
     def running_turn(self) -> Optional[Turn]:
         return self._running_turn
+
+    @property
+    def typed_turn(self) -> Optional[Turn]:
+        """The prompt typed into the TUI whose transcript entry has not arrived.
+
+        None means the keyboard is free: nothing is waiting to be recognised,
+        so the next prompt can go in. A caller that types past this would put
+        two prompts in flight with one binding decision to tell them apart.
+        """
+        return self._typed_turn
 
     @property
     def turns(self) -> list[Turn]:
