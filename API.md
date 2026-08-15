@@ -73,6 +73,13 @@ Every line on stdout is one complete JSON object with the same envelope:
 `outstanding` is absolute, not a delta. A client never accumulates it, and a
 client that missed messages is correct again on the next one it sees.
 
+**Read the counts; do not derive them from the events.** All the messages one
+transcript entry produces are stamped after that entry has been folded into
+the proxy's tables, so inside such a batch the counts run ahead of the events
+you have read — a `task_start` emitted alongside the `task_end` that closes it
+already carries the count the pair leaves behind. The counts are never stale,
+only early, and the next message restates them.
+
 | Count | Counts | Falls when |
 |---|---|---|
 | `user` | prompts this client submitted, queued and running | that turn's `turn_end` |
@@ -179,6 +186,11 @@ has seen before:
 
 Give the `status` a `ref` and the `state` carries it back; two queries in
 flight then cannot be confused.
+
+It lists turns, not the `ref`s that claimed them, so **keep your own ref-to-id
+map across a reconnect**. A turn id in the reply can be recognised as one you
+were already waiting on; it cannot be re-attached afterwards to a prompt whose
+`ack` you never read.
 
 ## The shape of one turn
 

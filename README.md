@@ -34,8 +34,12 @@ Unrecognised arguments go through to the inner `claude`, so `agent-proxy
 `AGENTPROXY_LOG=/path/to/file` to record the pty bytes, the stdin lines and
 the state transitions behind the stream.
 
+Every SPEC requirement, constraint and success criterion that can be checked
+without a client has a test naming it, in `tests/requirements/`.
+
 Not yet done: neither client has migrated, so bzdash and ADE still spawn
-claudejson.
+claudejson. That migration is work in *their* repositories — this one supplies
+the protocol and the reference client to code against.
 
 ## Commands
 
@@ -76,6 +80,9 @@ tied to the background command whose completion woke it.
 | `src/agentproxy/{pty_driver,io_loop,screen_model,input_encoder,transcript_tailer,ids,log}.py` | inherited from claudejson |
 | `tools/make_synthetic_fixture.py` | build the test session out of real entry shapes |
 | `tools/capture_fixture.py` | cut a fixture out of a real session transcript |
+| `tests/harness.py` | a proxied session with the pty taken out, shared by the suites below |
+| `tests/requirements/` | one test group per SPEC requirement, constraint and success criterion |
+| `tests/requirements/reference_client.py` | a client with no inference layer, used to check the protocol keeps its word |
 
 ## Building and testing
 
@@ -85,7 +92,7 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-125 tests, none of which needs a `claude` binary. Two more do, and are opt-in
+168 tests, none of which needs a `claude` binary. Two more do, and are opt-in
 twice over — a marker alone deselects nothing on a bare `pytest`, and these
 spend real quota:
 
