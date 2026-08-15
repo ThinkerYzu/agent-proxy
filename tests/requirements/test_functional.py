@@ -1,4 +1,4 @@
-"""The eleven functional requirements of the SPEC, one test group each.
+"""The twelve functional requirements of the SPEC, one test group each.
 
 These are traceability tests: each one names the requirement it stands for and
 asserts what that requirement promises a client, on the protocol's own terms —
@@ -20,6 +20,7 @@ asserts the requirement over a whole session instead of repeating the unit.
 | 9 — queued-turn visibility | `test_requirement_9_queued_and_running_are_told_apart` |
 | 10 — errors and termination | `test_requirement_10_*` (three tests) |
 | 11 — no turn may hang without an end-of-turn | `test_requirement_11_*` (four tests) |
+| 12 — session identity stated first, and always | `test_requirement_12_*` (three tests) |
 
 [SPEC § Functional Requirements](../../../../proj_docs/agent-proxy/SPEC.md#functional-requirements)
 """
@@ -27,6 +28,7 @@ asserts the requirement over a whole session instead of repeating the unit.
 from __future__ import annotations
 
 import io
+import json
 
 import pytest
 
@@ -664,3 +666,59 @@ def test_requirement_11_a_marker_arriving_after_the_fallback_opens_no_phantom(se
     assert [m["turn"]["id"] for m in session.of_type("turn_end")] == [turn_id]
     assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
     invariants.all_of_them(session.messages())
+
+
+# ----------------------------------------------------------------------
+# Requirement 12 — session identity is stated first, and always
+# ----------------------------------------------------------------------
+
+
+def test_requirement_12_the_session_id_is_the_first_thing_a_client_reads(session):
+    """Before any command is read or any key typed, the client is told which
+    session it is talking to — which is what it records to resume later."""
+    first = session.messages()[0]
+    assert first["seq"] == 1
+    assert first["type"] == "ready"
+    assert first["session_id"] == "session-under-test"
+
+
+def test_requirement_12_every_invocation_names_a_session(tmp_path):
+    """"Always" is the load-bearing word: the invocations that could not name
+    a session before are exactly the recovery ones, so a null id would be
+    missing where it matters most ([R9]).
+
+    [R9]: ../../../../proj_docs/agent-proxy/SPEC.md#resolved-decisions
+    """
+    from agentproxy import inner_claude
+    from agentproxy.transcript_tailer import encode_cwd
+
+    cwd = "/work/thing"
+    project_dir = tmp_path / encode_cwd(cwd)
+    project_dir.mkdir(parents=True)
+    (project_dir / "prior.jsonl").write_text('{"type":"user"}\n')
+
+    for argv in ([], ["--resume", "prior"], ["--continue"], ["--resume"],
+                 ["--continue", "--fork-session"], ["--session-id", "named"]):
+        session_id, _, rewritten = inner_claude.resolve_session(
+            argv, cwd=cwd, projects_root=tmp_path
+        )
+        assert session_id, f"{argv} named no session"
+        # And the inner is told the same id the client was, so the two cannot
+        # be looking at different transcripts.
+        assert session_id in rewritten
+
+
+def test_requirement_12_an_unresolvable_invocation_says_so_and_starts_nothing():
+    """The one case where `ready` is not first, because there is no session to
+    be ready for. It is a lone `error` rather than a spawn that dies."""
+    from agentproxy import cli
+
+    out = io.StringIO()
+    code = cli.serve(
+        io.BytesIO(b""), out, passthrough=["--resume", "abc", "--session-id", "def"]
+    )
+    messages = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert code == 2
+    assert len(messages) == 1
+    assert messages[0]["type"] == "error"
+    assert "--fork-session" in messages[0]["error"]

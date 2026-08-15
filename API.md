@@ -28,13 +28,37 @@ passthrough:
 |---|---|
 | print-mode flags dropped | `-p`, `--print`, `--verbose`, `--input-format`, `--output-format` are removed — they would turn off the TUI the design depends on |
 | permissions skipped | `--dangerously-skip-permissions` is added unless the caller passed it |
-| one tool denied | `AskUserQuestion` is folded into `--disallowedTools`; it waits on a human keystroke no client can send |
-| session id minted | on a vanilla invocation the proxy appends `--session-id <uuid>` so it knows the transcript path up front |
+| one tool denied | `AskUserQuestion` is folded into `--disallowedTools`, ahead of any `--`; it waits on a human keystroke no client can send |
+| session flags rewritten | the proxy resolves the session itself and passes a canonical `--session-id` / `--resume` pair, replacing whatever session flags the caller wrote |
 
-`--continue`, `--fork-session`, and a bare `--resume` with no id leave the
-session id unknowable in advance; the proxy falls back to watching the project
-directory for the file the inner creates, and `ready` then carries
-`"session_id": null`.
+### Sessions
+
+Every invocation resolves to a session id, and `ready` — always the first
+message — carries it. It is never null. Record it and a later process can
+resume the same conversation with `--resume <id>`; that is the only piece of
+state that outlives the proxy.
+
+| You run | You get | The transcript is read |
+|---|---|---|
+| `agent-proxy` | a new session, id minted for you | from the start |
+| `agent-proxy --session-id <uuid>` | that session | from the start |
+| `agent-proxy --resume <uuid>` | that session, continued | from the end — its existing turns are not replayed |
+| `agent-proxy --continue` | the newest session in this directory | from the end |
+| `agent-proxy --resume` (no id) | the same; the proxy resolves it rather than opening the inner's picker, which it could not answer | from the end |
+| `agent-proxy --resume <uuid> --fork-session` | a **new** session branched off that one; `ready` names the fork, not the original | skipping the copy of the original's history that the fork is backfilled with |
+
+Two things worth knowing:
+
+- **`--continue` and a bare `--resume` pick the newest transcript in the
+  directory**, and the proxy then passes `--resume <id>` explicitly — so the id
+  you are told is the session the inner actually runs, not a guess about what
+  it chose. If the directory has no sessions yet, you get a new one, which is
+  what the inner does there too.
+- **`--session-id` cannot be combined with `--resume` or `--continue`** unless
+  `--fork-session` is also given. The inner rejects that combination, so the
+  proxy rejects it first: a single `error` message, exit status 2, and no
+  session started. That is the only case where `ready` is not the first thing
+  you read.
 
 ### Environment
 
@@ -146,7 +170,7 @@ a queued turn, no interrupt for a running one
 
 | `type` | When | Fields beyond the envelope |
 |---|---|---|
-| `ready` | first message of the session | `session_id` (string or null) |
+| `ready` | first message of the session, always `seq` 1 | `session_id` — always a real id, see [Sessions](#sessions) |
 | `ack` | a `submit` was accepted | `ref` if the command carried one (`turn` carries the new id) |
 | `turn_start` | a turn began running | `caused_by` when a background task woke it |
 | `text` | assistant prose | `text` |

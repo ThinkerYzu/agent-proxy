@@ -31,6 +31,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -75,6 +76,7 @@ class TranscriptTailer:
     _path: Optional[Path] = None
     _offset: int = 0
     _partial: str = ""
+    _skip_before: Optional[datetime] = None
 
     @classmethod
     def for_cwd(cls, cwd: os.PathLike | str, projects_root: Path = PROJECTS_ROOT) -> "TranscriptTailer":
@@ -90,11 +92,12 @@ class TranscriptTailer:
         session_id: str,
         *,
         start_at_end: bool = False,
+        skip_before: Optional[datetime] = None,
         projects_root: Path = PROJECTS_ROOT,
     ) -> "TranscriptTailer":
         """Deterministic-path constructor used when we know the session id
-        up-front (caller passed `--session-id <uuid>` to the inner spawn,
-        or the wrapper is resuming via `--resume <uuid>`).
+        up-front — which, since `resolve_session` names every session, is
+        every invocation.
 
         Bypasses the snapshot-diff: `_path` is set immediately to
         `<projects_root>/<encoded-cwd>/<session_id>.jsonl`. When the inner
@@ -102,14 +105,41 @@ class TranscriptTailer:
         it does. When `start_at_end=True` and the file already exists (resume
         case), the read cursor is seeded at end-of-file so historical entries
         from prior turns are not re-emitted as fresh envelopes.
+
+        `skip_before` is the fork case, where seeking cannot work: the file
+        does not exist yet at construction time, and the inner then creates it
+        holding a *copy* of the original session's history. The copy keeps the
+        original's timestamps, so entries stamped before the proxy started are
+        history rather than news, and are dropped as they are read.
         """
         project_dir = projects_root / encode_cwd(cwd)
         path = project_dir / f"{session_id}.jsonl"
         t = cls(project_dir=project_dir)
         t._path = path
+        t._skip_before = skip_before
         if start_at_end and path.is_file():
             t._offset = path.stat().st_size
         return t
+
+    def _is_backfill(self, entry: dict) -> bool:
+        """True for an entry copied in from the session this one forked off.
+
+        Only timestamped entries can be judged, so untimestamped bookkeeping
+        (`mode`, `queue-operation`) passes through: it belongs to the new
+        session, and none of it opens a turn or carries content.
+        """
+        if self._skip_before is None:
+            return False
+        stamp = entry.get("timestamp")
+        if not isinstance(stamp, str):
+            return False
+        try:
+            when = datetime.fromisoformat(stamp)
+        except ValueError:
+            return False
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return when < self._skip_before
 
     @property
     def path(self) -> Optional[Path]:
@@ -175,6 +205,8 @@ class TranscriptTailer:
                 # format quirks.
                 continue
             if entry.get("type") in SKIP_TYPES:
+                continue
+            if self._is_backfill(entry):
                 continue
             out.append(entry)
         return out

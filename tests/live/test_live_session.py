@@ -200,3 +200,109 @@ def test_a_status_query_is_answered_while_a_turn_runs(session):
     reader.wait_for(drained, 90.0)
     session.stdin.close()
     assert session.wait(timeout=60) == 0
+
+
+# ----------------------------------------------------------------------
+# Requirement 12 — the session id, round-tripped through a real `claude`
+# ----------------------------------------------------------------------
+
+
+def run_session(cwd, passthrough, prompts, budget=SESSION_BUDGET_S):
+    """One whole proxied session: submit each prompt, wait for it to drain.
+
+    Returns the messages. Prompts go in one write, as a client sends them.
+    """
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "agentproxy.cli", *passthrough],
+        cwd=cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+    try:
+        reader = Reader(proc)
+        proc.stdin.write(
+            "".join(json.dumps({"type": "submit", "text": p}) + "\n" for p in prompts)
+        )
+        proc.stdin.flush()
+
+        def all_answered(messages):
+            return sum(1 for m in messages if m["type"] == "turn_end") >= len(prompts)
+
+        messages = reader.wait_for(all_answered, budget)
+        proc.stdin.close()
+        proc.wait(timeout=60)
+        return messages
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=30)
+
+
+def said(messages):
+    """Everything the agent actually said, lowercased, as one string."""
+    return " ".join(m["text"] for m in messages if m["type"] == "text").lower()
+
+
+def test_the_session_id_a_client_is_given_is_one_it_can_resume(tmp_path):
+    """The whole point of requirement 12: record the id, come back later.
+
+    Three sessions against a real `claude` — start one and remember its id,
+    resume it by that id, then let `--continue` find it with no id at all.
+    Each has to carry the earlier conversation forward, which is the proof
+    that the id names the session the inner actually ran.
+    """
+    first = run_session(
+        tmp_path, [], ["Remember this codeword: ZUCCHINI. Reply with exactly: STORED"]
+    )
+    assert first[0]["type"] == "ready"
+    session_id = first[0]["session_id"]
+    assert session_id, "requirement 12: the first message must name the session"
+    print(f"session 1: {session_id}\n" + summarise(first))
+
+    # Resumed by the id the client was handed.
+    second = run_session(
+        tmp_path, ["--resume", session_id], ["What was the codeword? Reply with just the word."]
+    )
+    assert second[0]["session_id"] == session_id
+    assert "zucchini" in said(second), summarise(second)
+
+    # And `--continue`, which names no session, resolves to the same one and
+    # says so — before this it could only answer `null`.
+    third = run_session(
+        tmp_path, ["--continue"], ["Say the codeword once more, just the word."]
+    )
+    assert third[0]["session_id"] == session_id
+    assert "zucchini" in said(third), summarise(third)
+
+
+def test_a_forked_session_gets_a_new_id_and_replays_no_history(tmp_path):
+    """A fork's transcript is backfilled with a copy of the original's
+    exchanges, under the new session id and with the original's timestamps.
+    The client must be told the *new* id, and must not be shown the copy as
+    though this session had just said it.
+    """
+    original = run_session(
+        tmp_path, [], ["Remember this codeword: AUBERGINE. Reply with exactly: STORED"]
+    )
+    original_id = original[0]["session_id"]
+
+    forked = run_session(
+        tmp_path,
+        ["--resume", original_id, "--fork-session"],
+        ["What was the codeword? Reply with just the word."],
+    )
+    print(f"original {original_id}, fork {forked[0]['session_id']}\n" + summarise(forked))
+
+    # A new session, and the id is the fork's — what a later --resume needs.
+    assert forked[0]["session_id"] not in (None, original_id)
+
+    # It inherited the conversation...
+    assert "aubergine" in said(forked), summarise(forked)
+
+    # ...but the copied history is not re-emitted: exactly one turn ran here,
+    # and nothing from the original session's exchange came back as news.
+    assert len([m for m in forked if m["type"] == "turn_end"]) == 1
+    assert "stored" not in said(forked), summarise(forked)

@@ -30,9 +30,15 @@ echo '{"type":"submit","text":"Reply with exactly: PONG"}' | agent-proxy
 ```
 
 Unrecognised arguments go through to the inner `claude`, so `agent-proxy
---resume <uuid>` and `agent-proxy --model opus` work as expected. Set
-`AGENTPROXY_LOG=/path/to/file` to record the pty bytes, the stdin lines and
-the state transitions behind the stream.
+--model opus` works as expected. Set `AGENTPROXY_LOG=/path/to/file` to record
+the pty bytes, the stdin lines and the state transitions behind the stream.
+
+The session flags are the exception — the proxy resolves those itself so it
+can name the session before it types anything. `ready` is always the first
+message and always carries a real `session_id`, including for `--continue`,
+a bare `--resume`, and `--fork-session`. Keep that id and `agent-proxy
+--resume <id>` picks the conversation up in a later process; see
+[API.md](API.md#sessions) for the full table.
 
 Every SPEC requirement, constraint and success criterion that can be checked
 without a client has a test naming it, in `tests/requirements/`.
@@ -92,7 +98,7 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-168 tests, none of which needs a `claude` binary. Two more do, and are opt-in
+184 tests, none of which needs a `claude` binary. Four more do, and are opt-in
 twice over — a marker alone deselects nothing on a bare `pytest`, and these
 spend real quota:
 

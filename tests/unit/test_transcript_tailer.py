@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import pytest
 
 from agentproxy.transcript_tailer import TranscriptTailer, encode_cwd
@@ -220,3 +221,71 @@ def test_malformed_jsonl_line_is_skipped(tmp_path):
     )
     entries = tailer.read_new()
     assert [e["type"] for e in entries] == ["user", "assistant"]
+
+
+# ----------------------------------------------------------------------
+# A forked session's backfill
+# ----------------------------------------------------------------------
+
+
+def _entry(kind, text, timestamp):
+    return json.dumps(
+        {
+            "type": kind,
+            "timestamp": timestamp,
+            "message": {"role": kind, "content": text},
+        }
+    )
+
+
+def test_a_forks_copied_history_is_not_read_as_this_sessions_messages(tmp_path):
+    """Forking backfills the new file with the original's exchanges, rewritten
+    under the new session id. They keep the *original's* timestamps, which is
+    the only thing separating them from what this session goes on to say —
+    without the cutoff the proxy would replay a past conversation as news.
+    """
+    projects_root = tmp_path / "projects"
+    cwd = tmp_path / "proj"
+    project_dir = projects_root / encode_cwd(cwd)
+    project_dir.mkdir(parents=True)
+
+    started_at = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+    tailer = TranscriptTailer.for_known_path(
+        cwd, "forked", skip_before=started_at, projects_root=projects_root
+    )
+
+    (project_dir / "forked.jsonl").write_text(
+        "\n".join(
+            [
+                # Backfill: yesterday's conversation, copied in at startup.
+                _entry("user", "old question", "2026-08-14T09:00:00.000Z"),
+                _entry("assistant", "old answer", "2026-08-14T09:00:02.000Z"),
+                # Bookkeeping the new session writes with no timestamp.
+                json.dumps({"type": "mode", "mode": "default"}),
+                # This session's own work.
+                _entry("user", "new question", "2026-08-15T12:00:05.000Z"),
+                _entry("assistant", "new answer", "2026-08-15T12:00:07.000Z"),
+            ]
+        )
+        + "\n"
+    )
+
+    entries = tailer.read_new()
+    said = [e.get("message", {}).get("content") for e in entries]
+    assert said == [None, "new question", "new answer"]
+    assert entries[0]["type"] == "mode"
+
+
+def test_without_a_cutoff_every_entry_is_read(tmp_path):
+    """The filter is opt-in: a new or resumed session has no backfill to drop,
+    and must not lose an entry to a clock comparison it never asked for."""
+    projects_root = tmp_path / "projects"
+    cwd = tmp_path / "proj"
+    project_dir = projects_root / encode_cwd(cwd)
+    project_dir.mkdir(parents=True)
+    tailer = TranscriptTailer.for_known_path(cwd, "plain", projects_root=projects_root)
+
+    (project_dir / "plain.jsonl").write_text(
+        _entry("user", "ancient", "2001-01-01T00:00:00.000Z") + "\n"
+    )
+    assert len(tailer.read_new()) == 1

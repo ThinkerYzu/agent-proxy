@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime, timezone
 from typing import IO, Optional, Sequence
 
 from agentproxy import inner_claude, log
@@ -64,18 +65,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
 
-def _open_tailer(session_id: Optional[str], tail_mode: str) -> TranscriptTailer:
+def _open_tailer(session_id: str, tail_mode: str, started_at: datetime) -> TranscriptTailer:
     """Point the tailer at the transcript the inner `claude` is about to write.
 
-    `discover` is the fallback for the invocations whose session id cannot be
-    known in advance — it diffs the project directory for the file that
-    appears, so it must be constructed *before* the inner is spawned.
+    Every session id is known before the spawn (DESIGN Decision 6), so the
+    path is always deterministic and the old directory-diff is gone. Must
+    still be constructed *before* the inner starts, so a resume seeks past the
+    file's existing contents rather than past whatever the inner has appended
+    by the time we look.
     """
-    cwd = os.getcwd()
-    if session_id is None or tail_mode == "discover":
-        return TranscriptTailer.for_cwd(cwd)
     return TranscriptTailer.for_known_path(
-        cwd, session_id, start_at_end=(tail_mode == "from_end")
+        os.getcwd(),
+        session_id,
+        start_at_end=(tail_mode == "from_end"),
+        skip_before=started_at if tail_mode == "fork" else None,
     )
 
 
@@ -84,9 +87,25 @@ def serve(
     stdout: IO[str],
     passthrough: Sequence[str] = (),
 ) -> int:
-    """Run one proxied session, from spawn to the last message on stdout."""
-    session_id, tail_mode, argv = inner_claude.resolve_session(passthrough)
-    tailer = _open_tailer(session_id, tail_mode)
+    """Run one proxied session, from spawn to the last message on stdout.
+
+    Returns 0 for a session that ran, 2 for session flags that name no single
+    session. That is the one case where `ready` is not the first message,
+    because there is no session to be ready for: the failure is reported as a
+    lone `error` and nothing is spawned.
+    """
+    # Stamped before the spawn so a forked session's backfill — which carries
+    # the original's timestamps — is entirely in the past by this clock.
+    started_at = datetime.now(timezone.utc)
+    try:
+        session_id, tail_mode, argv = inner_claude.resolve_session(passthrough)
+    except inner_claude.SessionArgumentError as bad_flags:
+        Emitter(TurnTracker(), out=stdout).emit(
+            {"type": "error", "error": str(bad_flags)}
+        )
+        stdout.flush()
+        return 2
+    tailer = _open_tailer(session_id, tail_mode, started_at)
 
     driver = PtyDriver(
         inner_claude.build_argv(argv), env=inner_claude.build_env(dict(os.environ))

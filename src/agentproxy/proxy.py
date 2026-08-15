@@ -68,8 +68,15 @@ class Proxy:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def announce_ready(self, session_id: Optional[str]) -> None:
-        """Tell the client the session is up, and which one it is."""
+    def announce_ready(self, session_id: str) -> None:
+        """Tell the client the session is up, and which one it is.
+
+        Always the first message on the stream, and its `session_id` is always
+        a real id ([requirement 12]) — it is what a client records to resume
+        this conversation in a later process.
+
+        [requirement 12]: ../../../../proj_docs/agent-proxy/SPEC.md#functional-requirements
+        """
         self._emit([{"type": "ready", "session_id": session_id}])
 
     def fail(self, reason: str) -> None:

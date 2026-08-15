@@ -8,17 +8,23 @@ jobs:
 - **Harden the spawn**, so the proxy never meets a screen it cannot answer:
   no permission prompts, and no `AskUserQuestion` selector, which blocks a
   turn on a keystroke no client can send and deadlocks the session.
-- **Know the transcript path up front** by minting a session id when the
-  caller did not name one, so the tailer opens a deterministic file instead
-  of diffing the project directory for a new one.
+- **Know the transcript path up front** by resolving a session id for every
+  invocation, so the tailer opens a deterministic file and the proxy can name
+  the session before it types anything ([requirement 12] / DESIGN Decision 6).
+
+[requirement 12]: ../../../../proj_docs/agent-proxy/SPEC.md#functional-requirements
 """
 
 from __future__ import annotations
 
+import os
 import re
-from typing import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, Sequence
 
 from agentproxy import ids
+from agentproxy.transcript_tailer import PROJECTS_ROOT, encode_cwd
 
 
 # Print-mode flags agent-proxy speaks itself. Passing them to the inner would
@@ -97,67 +103,169 @@ def filter_passthrough(argv: Sequence[str]) -> list[str]:
     return out
 
 
-def resolve_session(passthrough: Sequence[str]) -> tuple[str | None, str, list[str]]:
-    """Decide which transcript the tailer should open, and from where.
+class SessionArgumentError(ValueError):
+    """The caller's session flags cannot be resolved to one session."""
 
-    Returns `(session_id, tail_mode, argv)`. `tail_mode` is one of:
 
-    - `from_start` — a new session, or one the caller named; read the whole file
-    - `from_end` — resuming an existing session; skip what it already holds,
-      or every historical entry replays as this session's messages
-    - `discover` — the id cannot be known up front (`--continue`, a bare
-      `--resume` that opens the picker, `--fork-session`), so fall back to
-      diffing the project directory for the file the inner creates
+def most_recent_session(
+    cwd: os.PathLike | str, projects_root: Path = PROJECTS_ROOT
+) -> Optional[str]:
+    """The session id `--continue` would land on, or None if there is none.
 
-    On a vanilla invocation the id is minted here and `--session-id` appended,
-    which is what makes the common case deterministic rather than a race
-    against directory scanning.
+    Newest non-empty transcript in this directory's project dir, by mtime.
+    Zero-byte files are skipped: a session that never got written is not one
+    a client can be handed back.
+
+    The proxy uses this to *choose* a session rather than to predict the
+    inner's choice — the id is then passed as `--resume <id>`, so the two
+    cannot disagree even if the inner's own selection rule differs.
     """
-    explicit_session: str | None = None
-    resume_value: str | None = None
-    has_resume = False
-    has_continue = False
-    has_fork = False
+    project_dir = Path(projects_root) / encode_cwd(cwd)
+    if not project_dir.is_dir():
+        return None
+    try:
+        candidates = [
+            p
+            for p in project_dir.iterdir()
+            if p.suffix == ".jsonl" and p.stat().st_size > 0
+        ]
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime).stem
 
+
+def resolve_session(
+    passthrough: Sequence[str],
+    *,
+    cwd: os.PathLike | str | None = None,
+    projects_root: Path = PROJECTS_ROOT,
+) -> tuple[str, str, list[str]]:
+    """Decide which session the inner will run, and how to read its transcript.
+
+    Returns `(session_id, tail_mode, argv)`. The session id is never None —
+    that is [requirement 12], and the reason this function rewrites the
+    caller's session flags instead of forwarding them: every invocation is
+    turned into one that names its session explicitly.
+
+    `tail_mode` is one of:
+
+    - `from_start` — a new session; read its file from the top
+    - `from_end` — resuming an existing session; seek past what it already
+      holds, or every historical entry replays as this session's messages
+    - `fork` — a forked session, whose file the inner backfills with a copy of
+      the original's history. The copy carries the *original's* timestamps, so
+      the tailer drops entries stamped before the proxy started rather than
+      seeking, which it cannot do to a file that does not exist yet
+
+    Raises `SessionArgumentError` for `--session-id` alongside `--resume` or
+    `--continue` without `--fork-session` — the inner rejects that combination
+    outright, and failing here turns a spawn that dies into a message that
+    says why.
+    """
+    flags = _parse_session_flags(passthrough)
+    argv = flags.rest
+
+    if flags.explicit_id and (flags.resume_id or flags.wants_recent) and not flags.fork:
+        raise SessionArgumentError(
+            "--session-id can only be combined with --resume or --continue "
+            "when --fork-session is also given"
+        )
+
+    base_id = flags.resume_id
+    if base_id is None and flags.wants_recent:
+        base_id = most_recent_session(cwd if cwd is not None else os.getcwd(), projects_root)
+
+    # The flags go in front of the caller's arguments, never after them: a
+    # passthrough may end in `--`, and anything following that is a positional
+    # argument to the inner rather than an option — an appended `--session-id`
+    # would be read as prompt text and the session would not be the one we
+    # named.
+    #
+    # Forking mints a second session out of the first, so the id the client
+    # gets back is the *new* one — it is what a later `--resume` must name.
+    if flags.fork and base_id is not None:
+        forked = flags.explicit_id or ids.make_session_id()
+        return forked, "fork", [
+            "--resume",
+            base_id,
+            "--fork-session",
+            "--session-id",
+            forked,
+        ] + argv
+
+    if base_id is not None:
+        return base_id, "from_end", ["--resume", base_id] + argv
+
+    # Nothing to resume — either none was asked for, or `--continue` was asked
+    # for in a directory with no sessions yet. The inner does the same thing
+    # there (it starts a new conversation rather than failing), and a stated
+    # new id is more use to a client than a refusal.
+    fresh = flags.explicit_id or ids.make_session_id()
+    return fresh, "from_start", ["--session-id", fresh] + argv
+
+
+@dataclass
+class _SessionFlags:
+    """The caller's session-control flags, lifted out of the passthrough."""
+
+    explicit_id: Optional[str] = None
+    resume_id: Optional[str] = None
+    wants_recent: bool = False  # `--continue`, or `--resume` with no id
+    fork: bool = False
+    rest: list[str] = field(default_factory=list)
+
+
+def _parse_session_flags(argv: Sequence[str]) -> _SessionFlags:
+    """Split the session-control flags off the rest of the passthrough.
+
+    They are removed rather than read in place, because `resolve_session`
+    re-emits a canonical set in their stead; leaving the originals would let
+    the caller's `--continue` reach the inner alongside the `--resume` that
+    replaced it.
+    """
+    flags = _SessionFlags()
     index = 0
-    while index < len(passthrough):
-        arg = passthrough[index]
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--":
+            flags.rest.extend(argv[index:])
+            break
         if arg == "--session-id":
-            if index + 1 < len(passthrough):
-                explicit_session = passthrough[index + 1]
-            index += 2
-            continue
-        if arg.startswith("--session-id="):
-            explicit_session = arg.split("=", 1)[1]
-            index += 1
-            continue
-        if arg in ("--resume", "-r"):
-            has_resume = True
-            if index + 1 < len(passthrough) and not passthrough[index + 1].startswith("-"):
-                resume_value = passthrough[index + 1]
+            if index + 1 < len(argv):
+                flags.explicit_id = argv[index + 1]
                 index += 2
                 continue
             index += 1
             continue
+        if arg.startswith("--session-id="):
+            flags.explicit_id = arg.split("=", 1)[1]
+            index += 1
+            continue
+        if arg in ("--resume", "-r"):
+            if index + 1 < len(argv) and not argv[index + 1].startswith("-"):
+                flags.resume_id = argv[index + 1]
+                index += 2
+                continue
+            flags.wants_recent = True
+            index += 1
+            continue
         if arg.startswith("--resume="):
-            has_resume = True
-            resume_value = arg.split("=", 1)[1]
+            flags.resume_id = arg.split("=", 1)[1]
             index += 1
             continue
         if arg in ("--continue", "-c"):
-            has_continue = True
+            flags.wants_recent = True
+            index += 1
+            continue
         if arg == "--fork-session":
-            has_fork = True
+            flags.fork = True
+            index += 1
+            continue
+        flags.rest.append(arg)
         index += 1
-
-    if has_fork or has_continue or (has_resume and resume_value is None):
-        return None, "discover", list(passthrough)
-    if resume_value:
-        return resume_value, "from_end", list(passthrough)
-    if explicit_session:
-        return explicit_session, "from_start", list(passthrough)
-    minted = ids.make_session_id()
-    return minted, "from_start", list(passthrough) + ["--session-id", minted]
+    return flags
 
 
 def _deny_interactive_tool(forwarded: list[str]) -> list[str]:
@@ -166,8 +274,29 @@ def _deny_interactive_tool(forwarded: list[str]) -> list[str]:
     `--disallowedTools` is variadic and its repeat behaviour is unspecified,
     so a second copy of the flag is never emitted: the tool is folded into the
     caller's own value group when there is one.
+
+    Everything from a `--` onwards is held back and re-appended afterwards, so
+    the denial always lands in the option section. Two facts about the inner
+    make that placement the only correct one, and they pull in opposite
+    directions (both verified against 2.1.233):
+
+    - arguments after `--` are **not parsed as options**, so a denial appended
+      to the very end of an argv containing one is passed to the model as
+      prompt text and the tool stays in its inventory
+    - the flag is **greedy**, swallowing every following token that does not
+      start with `-` as another tool name, so it cannot simply be moved to the
+      front either — it would eat the caller's positional arguments
+
+    Inserting it immediately before the `--` satisfies both: it is parsed, and
+    the `--` terminates its value list.
     """
-    out = list(forwarded)
+    cut = forwarded.index("--") if "--" in forwarded else len(forwarded)
+    out, positionals = list(forwarded[:cut]), list(forwarded[cut:])
+    return _fold_into_options(out) + positionals
+
+
+def _fold_into_options(out: list[str]) -> list[str]:
+    """Add or extend the denial within an argv's option section."""
     for index, arg in enumerate(out):
         for flag in _DISALLOWED_FLAGS:
             if arg.startswith(flag + "="):
