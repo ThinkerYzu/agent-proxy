@@ -5,6 +5,9 @@ boundaries instead of leaving clients to infer them. It replaces
 [claudejson](../claudejson/), inheriting its pty and transcript machinery and
 replacing its turn accounting.
 
+[API.md](API.md) is the wire contract — every command, every message, and what
+a client may assume about the order. Read it first if you are writing a client.
+
 Design docs live in `proj_docs/agent-proxy/` — [SPEC](../../proj_docs/agent-proxy/SPEC.md)
 for what and why, [DESIGN](../../proj_docs/agent-proxy/DESIGN.md) for how,
 [IMPLEMENTATION-GUIDE](../../proj_docs/agent-proxy/IMPLEMENTATION-GUIDE.md) for
@@ -40,6 +43,7 @@ claudejson.
 |---|---|
 | a prompt answered | `{"type": "submit", "text": "…"}` on stdin |
 | authoritative state, any time | `{"type": "status"}` on stdin |
+| to know which `ack` is yours | add a `"ref"` of your own to either — it comes back on the answer |
 | the tracker against a recorded session, no `claude` | `python3 -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-drained` |
 
 ## What it emits
@@ -59,6 +63,7 @@ tied to the background command whose completion woke it.
 
 | Path | What it is |
 |---|---|
+| `API.md` | the stdio protocol reference for clients |
 | `src/agentproxy/turn_tracker.py` | the turn table, the task table, binding and end-of-turn |
 | `src/agentproxy/protocol.py` | the envelope and the stdout writer |
 | `src/agentproxy/proxy.py` | the wiring — every decision, no process IO |
@@ -80,7 +85,7 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-122 tests, none of which needs a `claude` binary. Two more do, and are opt-in
+125 tests, none of which needs a `claude` binary. Two more do, and are opt-in
 twice over — a marker alone deselects nothing on a bare `pytest`, and these
 spend real quota:
 

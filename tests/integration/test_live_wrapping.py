@@ -253,6 +253,41 @@ def test_an_unusable_command_is_reported_and_typed_at_nobody(session):
     assert session.typed == []
 
 
+def test_a_command_is_answered_with_its_own_ref(session):
+    """The client's handle on a command, echoed on whatever answers it."""
+    session.send({"type": "submit", "text": "hello", "ref": "c-1"})
+    session.send({"type": "status", "ref": "c-2"})
+    session.send({"type": "submit", "text": "   ", "ref": "c-3"})
+    assert session.of_type("ack")[-1]["ref"] == "c-1"
+    assert session.of_type("state")[-1]["ref"] == "c-2"
+    assert session.of_type("error")[-1]["ref"] == "c-3"
+
+
+def test_a_rejected_submit_does_not_shift_the_acks_behind_it(session):
+    """Why `ref` exists: counting acks binds the third prompt to the second.
+
+    A `submit` the proxy will not act on produces an `error` and no `ack`, so
+    the ordinal a client would otherwise match on is one short from there on —
+    silently, and for the rest of the session.
+    """
+    session.send({"type": "submit", "text": "fix the leak", "ref": "c-1"})
+    session.send({"type": "submit", "text": "   ", "ref": "c-2"})
+    session.send({"type": "submit", "text": "now test it", "ref": "c-3"})
+
+    acks = {message["ref"]: message["turn"]["id"] for message in session.of_type("ack")}
+    assert acks == {"c-1": "t-1", "c-3": "t-2"}
+    assert "c-2" not in acks
+    # A client matching by position gives its second prompt the second ack.
+    # That ack is the third prompt's.
+    assert session.of_type("ack")[1]["ref"] == "c-3"
+
+
+def test_a_command_without_a_ref_is_answered_without_one(session):
+    """The field is optional; a client that does not correlate sees no change."""
+    session.submit("hello")
+    assert "ref" not in session.of_type("ack")[-1]
+
+
 def test_every_message_carries_all_three_counts(session):
     """Requirement 5 — what makes a client that missed a line self-correcting."""
     session.submit("hello")

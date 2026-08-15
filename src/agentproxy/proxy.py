@@ -25,6 +25,20 @@ from agentproxy.submit_queue import SubmitQueue
 from agentproxy.turn_tracker import TurnTracker
 
 
+def _tagged(events: list[dict], ref: object) -> list[dict]:
+    """Stamp a command's `ref` on the messages answering it.
+
+    Echoed verbatim, whatever the client sent, and omitted entirely when it
+    sent nothing — the field is optional, so a client that does not correlate
+    sees exactly the stream it saw before.
+    """
+    if ref is None:
+        return events
+    for event in events:
+        event["ref"] = ref
+    return events
+
+
 class Proxy:
     """One inner-`claude` session, seen from the client's side of the pipe."""
 
@@ -84,6 +98,13 @@ class Proxy:
         `claude` — the ack is the client's handle on the turn and it must not
         wait on the pty (requirement 2). `status` is answered here too and
         never reaches the keyboard; so is anything the proxy cannot parse.
+
+        A command may carry a `ref` of the client's choosing, which comes back
+        on the message answering it. Without one the only correspondence
+        between a command and its answer is positional — the same ordinal
+        matching R5 rules out for end-of-turn, and it fails the same way here:
+        a rejected `submit` produces an `error` rather than an `ack`, and a
+        client counting acks then binds every later prompt to the wrong turn.
         """
         try:
             command = json.loads(line)
@@ -93,17 +114,20 @@ class Proxy:
             return self._reject("stdin line is not a JSON object")
 
         kind = command.get("type")
+        ref = command.get("ref")
         if kind == "submit":
             text = command.get("text")
             if not isinstance(text, str) or not text.strip():
-                return self._reject("submit needs a non-empty 'text'")
+                return self._reject("submit needs a non-empty 'text'", ref)
             turn, events = self._tracker.submit(text)
-            self._emit(events)
+            self._emit(_tagged(events, ref))
             return self._queue.accept(turn)
         if kind == "status":
-            self._emit([{"type": "state", **self._tracker.snapshot()}])
+            self._emit(
+                _tagged([{"type": "state", **self._tracker.snapshot()}], ref)
+            )
             return None
-        return self._reject(f"unknown command type: {kind!r}")
+        return self._reject(f"unknown command type: {kind!r}", ref)
 
     def on_stdin_eof(self) -> None:
         """The client closed its end; finish what is in flight and stop."""
@@ -205,8 +229,13 @@ class Proxy:
                 self._fallback.note_turn_start()
             self._emitter.emit(event)
 
-    def _reject(self, reason: str) -> Optional[dict]:
-        """Report a command the proxy will not act on, and type nothing."""
+    def _reject(self, reason: str, ref: object = None) -> Optional[dict]:
+        """Report a command the proxy will not act on, and type nothing.
+
+        `ref` is the rejected command's own, when it had one — a rejection is
+        an answer like any other, and a client that cannot attribute it is
+        left waiting for an `ack` that will never come.
+        """
         log.log_text("proxy", f"rejected: {reason}")
-        self._emit([{"type": "error", "error": reason}])
+        self._emit(_tagged([{"type": "error", "error": reason}], ref))
         return None

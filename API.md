@@ -1,0 +1,348 @@
+# agent-proxy API
+
+The wire contract between a client and `agent-proxy`. Everything a client can
+say, everything the proxy can say back, and what it is allowed to assume about
+the order.
+
+This is the reference; for *why* the protocol has this shape see
+[SPEC](../../proj_docs/agent-proxy/SPEC.md) (requirements) and
+[DESIGN](../../proj_docs/agent-proxy/DESIGN.md) (decisions). Where this
+document and the code disagree, the code is `src/agentproxy/protocol.py` and
+`src/agentproxy/turn_tracker.py`.
+
+## Invocation
+
+```bash
+agent-proxy [claude arguments...]
+```
+
+The proxy spawns one interactive `claude` on a pty, reads line-delimited JSON
+commands on stdin, and writes line-delimited JSON messages on stdout. One
+client per process; the client owns the process's lifetime.
+
+Arguments the proxy does not recognise go to the inner `claude`, so
+`agent-proxy --resume 4f0d… --model opus` works. Four rules apply to that
+passthrough:
+
+| Rule | Effect |
+|---|---|
+| print-mode flags dropped | `-p`, `--print`, `--verbose`, `--input-format`, `--output-format` are removed — they would turn off the TUI the design depends on |
+| permissions skipped | `--dangerously-skip-permissions` is added unless the caller passed it |
+| one tool denied | `AskUserQuestion` is folded into `--disallowedTools`; it waits on a human keystroke no client can send |
+| session id minted | on a vanilla invocation the proxy appends `--session-id <uuid>` so it knows the transcript path up front |
+
+`--continue`, `--fork-session`, and a bare `--resume` with no id leave the
+session id unknowable in advance; the proxy falls back to watching the project
+directory for the file the inner creates, and `ready` then carries
+`"session_id": null`.
+
+### Environment
+
+| Variable | Default | What it does |
+|---|---|---|
+| `AGENTPROXY_LOG` | unset | path to a debug log of pty bytes, stdin lines and state transitions |
+| `AGENTPROXY_FALLBACK_IDLE_S` | `8` | footer idle + transcript quiet for this long ends a turn |
+| `AGENTPROXY_FALLBACK_QUIET_S` | `60` | pty silent + transcript quiet for this long ends a turn |
+| `AGENTPROXY_FALLBACK_STALL_S` | `1800` | the ceiling — transcript quiet this long ends a turn regardless |
+| `AGENTPROXY_SETTLE_QUIESCENCE_S` | `0.5` | how long to wait after the first idle frame before typing |
+| `CLAUDEJSON_SEND_QUIESCENCE_S` | `0.7` | pty quiet required before keystrokes go out (inherited name) |
+| `CLAUDEJSON_RESUBMIT_QUIESCENCE_S` | `1.5` | pty quiet required before re-sending a submit CR (inherited name) |
+
+The proxy sets `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1` on the inner. Without
+it a `claude` launched from inside another Claude Code session inherits
+`CLAUDE_CODE_CHILD_SESSION`, writes no transcript, and the proxy goes blind.
+
+## The stream
+
+Every line on stdout is one complete JSON object with the same envelope:
+
+```json
+{"seq": 42, "type": "text", "turn": {"id": "t-7", "kind": "user"},
+ "outstanding": {"user": 1, "unowned": 0, "background": 2},
+ "text": "The stale search turned up a glib checkout I didn't use."}
+```
+
+| Field | Present | Meaning |
+|---|---|---|
+| `seq` | always | counts from 1, no gaps; a jump means the client dropped a line |
+| `type` | always | one of the message types below |
+| `outstanding` | always | the three counts at the moment of emission |
+| `turn` | messages belonging to a turn | `id` correlates, `kind` is `user` or `unowned` |
+| `ref` | messages answering a command that carried one | the client's own token, echoed verbatim |
+
+`outstanding` is absolute, not a delta. A client never accumulates it, and a
+client that missed messages is correct again on the next one it sees.
+
+| Count | Counts | Falls when |
+|---|---|---|
+| `user` | prompts this client submitted, queued and running | that turn's `turn_end` |
+| `unowned` | turns the inner `claude` started on its own | that turn's `turn_end` |
+| `background` | `run_in_background` shell commands still running | that task's `task_end` |
+
+A background task is not a turn. One that finishes while the agent is idle
+starts an unowned turn; one that finishes mid-turn is folded into the running
+turn and starts nothing. That is why the count is separate.
+
+## Commands
+
+Write one JSON object per line to stdin and flush. Two are understood:
+
+```json
+{"type": "submit", "text": "what does load_timeout_id do?", "ref": "c-17"}
+{"type": "status", "ref": "c-18"}
+```
+
+`submit` is answered by an `ack` before anything reaches the inner `claude` —
+it never waits on the pty. `text` must be a non-empty string. `status` is
+answered by a `state` message, also without touching the keyboard.
+
+A line that is not JSON, not an object, has an unknown `type`, or is a
+`submit` with no usable `text`, produces an `error` message and nothing else.
+The session continues.
+
+### Correlating a command with its answer
+
+`ref` is optional, opaque to the proxy, and echoed verbatim on the message
+answering that command — the `ack`, the `state`, or the `error` for a command
+the proxy rejects. **Use it.** The answer is not the next line you read: the
+stream is also carrying turn messages, so an `ack` routinely arrives two or ten
+lines after the `submit` that earned it.
+
+```
+{"seq": 40, "type": "text",  "turn": {"id": "t-5", "kind": "unowned"}, ...}
+{"seq": 41, "type": "ack",   "turn": {"id": "t-6", "kind": "user"}, ..., "ref": "c-17"}
+```
+
+Without `ref` the only correspondence left is positional — the Nth `ack`
+answers the Nth `submit` — and that is the ordinal matching this protocol
+exists to remove, at the one point where a client *acquires* the id it will
+later match by. It breaks on the first rejection, because a rejected `submit`
+produces an `error` and no `ack`:
+
+```
+{"type":"submit","text":"fix the leak","ref":"c-1"}  ->  ack   t-1  ref c-1
+{"type":"submit","text":"   ","ref":"c-2"}           ->  error      ref c-2
+{"type":"submit","text":"now test it","ref":"c-3"}   ->  ack   t-2  ref c-3
+```
+
+A client counting acks binds `t-2` to its second prompt and then waits forever
+on a turn belonging to the third. Every later prompt is off by one, silently.
+
+A command that arrives as an unparseable line has no `ref` the proxy can read,
+so that one `error` is unattributable by construction. Everything else is.
+
+There is no cancellation. An acknowledged prompt always runs: no withdraw for
+a queued turn, no interrupt for a running one
+([R7](../../proj_docs/agent-proxy/SPEC.md#resolved-decisions)).
+
+## Message types
+
+| `type` | When | Fields beyond the envelope |
+|---|---|---|
+| `ready` | first message of the session | `session_id` (string or null) |
+| `ack` | a `submit` was accepted | `ref` if the command carried one (`turn` carries the new id) |
+| `turn_start` | a turn began running | `caused_by` when a background task woke it |
+| `text` | assistant prose | `text` |
+| `thinking` | assistant reasoning | `text` |
+| `tool_use` | the assistant called a tool | `tool`, `input`, `tool_use_id` |
+| `tool_result` | a tool returned | `tool_use_id`, `content`, `is_error` |
+| `turn_end` | a turn finished | `basis`, `outcome`, `usage` |
+| `task_start` | a background command was launched | `task` (`{id}`), `summary` (string or null) |
+| `task_end` | a background command exited | `task` (`{id}`), `exit_code` (int or null) |
+| `state` | reply to `status` | `turns`, `tasks`, `ref` if the query carried one |
+| `error` | a rejected command, or a session failure | `error` (string), `ref` if a rejected command carried one |
+
+Notes on the fields that carry weight:
+
+- **`turn_end.basis`** says how the end was decided — see [End of
+  turn](#end-of-turn).
+- **`turn_end.outcome`** is `success` or `error`. `error` means the turn was
+  closed by the failure path, not that the agent's answer was wrong.
+- **`turn_end.usage`** holds `duration_ms` (only from a marker that carried
+  one) and `output_tokens` (only when non-zero). It can be `{}`.
+- **`turn_start.caused_by`** is a background task id, tying an unowned turn to
+  the command whose completion woke it.
+- **`tool_result`** is the one turn message that can arrive with no `turn`
+  field, if the transcript runs ahead of the proxy's turn accounting.
+- **`error`** carries no `turn`. When a failure kills turns, the `error` comes
+  first and one `turn_end` per killed turn follows it.
+
+`state` answers with everything unfinished, and depends on nothing the client
+has seen before:
+
+```json
+{"seq": 88, "type": "state",
+ "outstanding": {"user": 1, "unowned": 0, "background": 1},
+ "turns": [{"id": "t-4", "kind": "user", "state": "queued", "caused_by": null}],
+ "tasks": [{"id": "bunha2ebm", "summary": "build firefox"}]}
+```
+
+Give the `status` a `ref` and the `state` carries it back; two queries in
+flight then cannot be confused.
+
+## The shape of one turn
+
+<svg viewBox="0 0 720 300" style="max-width:100%;height:auto" xmlns="http://www.w3.org/2000/svg">
+<rect x="0" y="0" width="720" height="300" fill="#ffffff"/>
+<defs>
+<marker id="api-a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+<polygon points="0 0, 9 3.5, 0 7" fill="#334155"/>
+</marker>
+</defs>
+<rect x="20" y="14" width="120" height="30" rx="5" fill="#dbeafe" stroke="#2563eb" stroke-width="1.4"/>
+<text x="80" y="34" font-family="sans-serif" font-size="12" font-weight="bold" fill="#1e3a8a" text-anchor="middle">client</text>
+<rect x="300" y="14" width="120" height="30" rx="5" fill="#f1f5f9" stroke="#64748b" stroke-width="1.4"/>
+<text x="360" y="34" font-family="sans-serif" font-size="12" font-weight="bold" fill="#0f172a" text-anchor="middle">agent-proxy</text>
+<rect x="580" y="14" width="120" height="30" rx="5" fill="#fef3c7" stroke="#d97706" stroke-width="1.4"/>
+<text x="640" y="34" font-family="sans-serif" font-size="12" font-weight="bold" fill="#78350f" text-anchor="middle">inner claude</text>
+<line x1="80" y1="44" x2="80" y2="288" stroke="#94a3b8" stroke-width="1"/>
+<line x1="360" y1="44" x2="360" y2="288" stroke="#94a3b8" stroke-width="1"/>
+<line x1="640" y1="44" x2="640" y2="288" stroke="#94a3b8" stroke-width="1"/>
+<line x1="80" y1="72" x2="356" y2="72" stroke="#334155" stroke-width="1.4" marker-end="url(#api-a)"/>
+<text x="86" y="66" font-family="sans-serif" font-size="10.5" fill="#334155">submit "…"</text>
+<line x1="360" y1="100" x2="84" y2="100" stroke="#334155" stroke-width="1.4" marker-end="url(#api-a)"/>
+<text x="94" y="94" font-family="sans-serif" font-size="10.5" fill="#334155">ack — turn t-1, user 1 (before anything is typed)</text>
+<line x1="360" y1="132" x2="636" y2="132" stroke="#334155" stroke-width="1.4" marker-end="url(#api-a)"/>
+<text x="366" y="126" font-family="sans-serif" font-size="10.5" fill="#334155">keystrokes, when idle and nothing running</text>
+<line x1="640" y1="164" x2="364" y2="164" stroke="#334155" stroke-width="1.4" marker-end="url(#api-a)"/>
+<text x="374" y="158" font-family="sans-serif" font-size="10.5" fill="#334155">transcript: the prompt, written as an entry</text>
+<line x1="360" y1="192" x2="84" y2="192" stroke="#334155" stroke-width="1.4" marker-end="url(#api-a)"/>
+<text x="94" y="186" font-family="sans-serif" font-size="10.5" fill="#334155">turn_start — t-1 matched the prompt we typed</text>
+<line x1="640" y1="224" x2="364" y2="224" stroke="#334155" stroke-width="1.4" marker-end="url(#api-a)"/>
+<text x="374" y="218" font-family="sans-serif" font-size="10.5" fill="#334155">transcript: blocks, then turn_duration</text>
+<line x1="360" y1="256" x2="84" y2="256" stroke="#334155" stroke-width="1.4" marker-end="url(#api-a)"/>
+<text x="94" y="250" font-family="sans-serif" font-size="10.5" fill="#334155">text / tool_use / tool_result, then turn_end — user 0</text>
+<text x="94" y="278" font-family="sans-serif" font-size="10" fill="#64748b">an unowned turn is the same from turn_start onwards, with no ack</text>
+</svg>
+
+What a client may rely on:
+
+1. `ready` is `seq` 1.
+2. `ack` arrives on receipt of the `submit`, bounded by the proxy's own
+   processing and not by the inner `claude` — though other messages may
+   already be ahead of it in the stream, which is what `ref` is for. The turn
+   counts as outstanding from that moment, while it is still queued.
+3. A user turn's `turn_start` arrives only once its prompt lands in the
+   transcript, which can be much later — the proxy types one prompt at a time.
+4. An unowned turn has no `ack`: `turn_start` is the first you hear of it.
+5. Every turn that starts also ends. A turn can also end *without* having
+   started, when the session fails while it is still queued.
+6. At most one turn runs at a time, so no message is ambiguous about which
+   turn it belongs to.
+
+**Wait on `turn.id`, never on order or counts.** A client's prompt can sit
+behind an unowned turn and behind its own earlier prompt, so the `turn_end`
+before yours is routinely someone else's. Ignoring foreign `turn_end` messages
+needs no bookkeeping — match the id and drop the rest. Counters answer a
+different question: *is anything still outstanding*, for gating the composer.
+
+## End of turn
+
+`basis` names the evidence the proxy used. Tier 1 is a transcript marker;
+tier 2 is the fallback that makes "a turn hangs forever" impossible.
+
+| `basis` | Tier | Condition |
+|---|---|---|
+| `marker:turn_duration` | 1 | the ordinary end-of-turn marker |
+| `marker:compact_boundary` | 1 | `/compact` completed |
+| `fallback:idle` | 2 | TUI footer idle and transcript quiet for `AGENTPROXY_FALLBACK_IDLE_S` |
+| `fallback:quiet` | 2 | pty silent and transcript quiet for `AGENTPROXY_FALLBACK_QUIET_S`, whatever the footer says |
+| `fallback:stalled` | 2 | transcript quiet for `AGENTPROXY_FALLBACK_STALL_S`, nothing else considered |
+| `error` | — | the turn was killed by a failure |
+
+A client can treat a `fallback:*` end as slightly less certain, but the more
+useful reading is operational: the marker set is open, so a `fallback:*` rate
+above roughly zero means `claude` grew a turn shape worth teaching to the
+proxy. `fallback:stalled` should be vanishingly rare — it can fire on a turn
+that is genuinely alive, such as one running a single long foreground command.
+
+## Failure and shutdown
+
+When the inner `claude` dies or the proxy hits an exception, it emits an
+`error` and then closes everything it opened: the running turn and every turn
+queued behind it get a `turn_end` with `basis: "error"` and
+`outcome: "error"`, and every unfinished background task gets a `task_end`
+with `"exit_code": null`. No counter is left above zero and no client is left
+waiting on an id that will never complete.
+
+Closing stdin is the clean shutdown. The proxy finishes the turn in flight,
+then exits. A background task still running does **not** hold the session
+open — the client that would hear about it has already gone — so that case
+ends with `"error": "client closed stdin with background work still running"`
+followed by the closing messages. Other reasons appear in the same field:
+
+| `error` text | Cause |
+|---|---|
+| `inner claude exited` | the pty reached EOF |
+| `interrupted by signal` | SIGTERM or SIGINT |
+| `proxy failed: …` | an exception, re-raised after the message |
+| `client closed stdin mid-turn` | reserved — `cli.py` passes its own stop condition, so the loop waits for the turn instead |
+| `inner claude went silent` | reserved — the io loop's idle budget is not armed today |
+
+`agent-proxy` exits 0 for every outcome it handles itself; an unhandled
+exception exits non-zero after the `error` message is written.
+
+## A minimal client
+
+```python
+import json, subprocess
+
+proxy = subprocess.Popen(
+    ["agent-proxy"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+)
+
+command = {"type": "submit", "text": "Reply PONG", "ref": "c-1"}
+proxy.stdin.write(json.dumps(command) + "\n")
+proxy.stdin.flush()
+
+mine = None
+for line in proxy.stdout:
+    message = json.loads(line)
+    if message["type"] == "ack" and message.get("ref") == "c-1":
+        mine = message["turn"]["id"]
+    elif message["type"] == "error" and message.get("ref") == "c-1":
+        break                      # rejected — no turn is coming
+    elif message["type"] == "text" and message.get("turn", {}).get("id") == mine:
+        print(message["text"])
+    elif message["type"] == "turn_end" and message["turn"]["id"] == mine:
+        break                      # our turn, whatever else ended meanwhile
+
+    busy = any(message["outstanding"].values())   # gate the composer on this
+```
+
+Three habits worth keeping from that sketch: the turn id is claimed by `ref`,
+the wait resolves on `turn.id`, and the composer is gated on `outstanding`.
+Everything else — how many `turn_end` messages went past, in what order,
+whether a background task is still running — is the proxy's problem.
+
+## Python entry points
+
+For tests and for embedding, the same behaviour is reachable without a
+subprocess.
+
+| Entry point | Use |
+|---|---|
+| `agentproxy.cli.serve(stdin, stdout, passthrough)` | run one session over the given streams; `stdin` is binary, `stdout` text |
+| `agentproxy.cli.main(argv)` | the console-script entry point |
+| `agentproxy.turn_tracker.TurnTracker` | the turn table alone — `submit`, `mark_typed`, `on_entry`, `end_running_turn`, `fail_session`, `outstanding`, `snapshot` |
+| `agentproxy.protocol.Emitter` | stamps `seq` and `outstanding` and writes a message |
+| `agentproxy.replay.replay(transcript, prompts, out)` | drive a tracker from a recorded transcript, with no `claude` |
+
+`TurnTracker` does no I/O and returns events as plain dicts, which is what
+makes a whole session replayable:
+
+```bash
+python3 -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-drained
+```
+
+## Versioning
+
+The protocol is unversioned and has one consumer at a time; the proxy tracks
+whatever `claude` is installed rather than a pinned version
+([constraint 3](../../proj_docs/agent-proxy/SPEC.md#constraints)). Two things
+follow for a client:
+
+- **Ignore unknown message types and unknown fields.** New types are added
+  when `claude` grows a shape worth reporting; the envelope does not change.
+- **`basis` values are open.** Match on the `marker:` / `fallback:` prefix
+  rather than on the full set.
