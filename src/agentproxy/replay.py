@@ -1,6 +1,6 @@
 """Replay a recorded transcript through `TurnTracker`, with no live `claude`.
 
-    python3 -m agentproxy.replay tests/fixtures/session-08ff12b4.jsonl --assert-drained
+    python3 -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-drained
 
 The transcript alone does not say which entries were prompts the proxy typed
 — that is provenance, and a recording has none. A sidecar file supplies it:

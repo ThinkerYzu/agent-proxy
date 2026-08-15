@@ -1,11 +1,17 @@
 """Cut a test fixture out of a real `~/.claude/projects` transcript.
 
-    python3 tools/capture_fixture.py <session>.jsonl tests/fixtures/session-08ff12b4.jsonl
+    python3 tools/capture_fixture.py <session>.jsonl /tmp/session-under-test.jsonl
 
 Writes two files: the fixture itself, with every long string truncated so a
 2.6 MB session becomes something a repository can carry, and a
 `.prompts.json` sidecar naming which lines were prompts a client typed.
 `agentproxy.replay` reads both.
+
+What it produces is for checking the tracker against a real session on the
+machine that recorded it — a truncated transcript is still a transcript of
+somebody's work, so it does not belong in the repository. The committed
+fixture is built instead by `make_synthetic_fixture.py`, out of the same entry
+shapes and none of the content.
 
 The sidecar exists because provenance cannot be recovered from a recording:
 the transcript shows what was said, never who typed it. This tool guesses,

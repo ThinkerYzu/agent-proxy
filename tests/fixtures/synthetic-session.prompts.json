@@ -1,0 +1,37 @@
+{
+  "source": "synthetic",
+  "prompts": [
+    {
+      "index": 3,
+      "text": "what does sort_widgets do?"
+    },
+    {
+      "index": 14,
+      "text": "run the benchmark in the background while we keep reading"
+    },
+    {
+      "index": 28,
+      "text": "start the corpus import in the background too"
+    },
+    {
+      "index": 36,
+      "text": "how is the comparator tested?"
+    },
+    {
+      "index": 45,
+      "text": "add a case for equal areas"
+    },
+    {
+      "index": 63,
+      "text": "/compact"
+    },
+    {
+      "index": 75,
+      "text": "find where the corpus path is configured"
+    },
+    {
+      "index": 83,
+      "text": "meanwhile, what is the default corpus path?"
+    }
+  ]
+}

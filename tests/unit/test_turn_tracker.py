@@ -1,8 +1,8 @@
 """TurnTracker rules, driven by hand-built transcript entries.
 
 The entry builders below mirror the shapes seen in a real session; the
-fixture replay in `tests/integration` covers the same rules against 1187
-recorded entries.
+fixture replay in `tests/integration` covers the same rules against a whole
+session's worth of them.
 """
 
 from __future__ import annotations
@@ -210,6 +210,22 @@ def test_compact_cluster_never_becomes_a_turn(tracker):
     events = tracker.on_entry(user_text("carry on"))
     assert types_of(events) == ["turn_start"]
     assert [t.kind for t in tracker.turns] == [KIND_USER, KIND_USER]
+
+
+def test_a_user_shaped_entry_arriving_mid_turn_starts_nothing(tracker):
+    """A skill injection, a hook's output, anything written into a live turn.
+
+    The rule needs no list of these: a turn is already running, so nothing
+    here can open one. Modelled rather than captured — the recorded session
+    the fixture came from contains no mid-turn injection.
+    """
+    turn = running_user_turn(tracker)
+    tracker.on_entry(assistant_text())
+    assert tracker.on_entry(user_text("<command-name>/widget-lint</command-name>")) == []
+    assert tracker.running_turn is turn
+    assert len(tracker.turns) == 1
+    tracker.on_entry(marker())
+    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
 
 
 def test_consecutive_unmatched_entries_fold_into_one_turn(tracker):
