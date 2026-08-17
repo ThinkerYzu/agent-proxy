@@ -1,0 +1,62 @@
+name: Release
+
+# Cut a release by pushing a version tag: `git tag v0.1.0 && git push origin v0.1.0`.
+# The tag must match `version` in pyproject.toml and `agentproxy.__version__` —
+# the job checks and refuses otherwise, before it builds anything.
+on:
+  push:
+    tags: [ "v*" ]
+
+permissions:
+  contents: write        # needed to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install and build tooling
+        run: |
+          python -m pip install --upgrade pip build
+          pip install -e '.[dev]'
+
+      - name: Verify the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          proj="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          mod="$(python -c 'import agentproxy; print(agentproxy.__version__)')"
+          echo "tag=$tag  pyproject=$proj  __version__=$mod"
+          if [ "$tag" != "$proj" ] || [ "$tag" != "$mod" ]; then
+            echo "::error::tag v$tag must match pyproject ($proj) and agentproxy.__version__ ($mod)"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: pytest
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      # Clients install the wheel and get a `agent-proxy` binary; nothing else in
+      # this job would notice if the package were missing from it, since the
+      # tests above run against the editable checkout. Install the wheel alone in
+      # a clean environment and drive it through a whole recorded session.
+      - name: Verify the wheel is a working proxy
+        run: |
+          python -m venv /tmp/relcheck
+          /tmp/relcheck/bin/pip install --quiet dist/*.whl
+          test -x /tmp/relcheck/bin/agent-proxy
+          /tmp/relcheck/bin/python -m agentproxy.replay \
+            tests/fixtures/synthetic-session.jsonl --assert-drained
+
+      # Use the runner's gh CLI (no third-party action / Node runtime) to publish.
+      - name: Create the GitHub Release with artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes

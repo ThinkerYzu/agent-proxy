@@ -1,0 +1,40 @@
+name: CI
+
+# The suite runs with no `claude` on the runner: everything but the live tier
+# reasons about recorded entry shapes, so a bare `pytest` needs nothing but the
+# package. The live tests are doubly opt-in — the `live` marker *and*
+# AGENTPROXY_RUN_LIVE=1 — and skip here, which is why CI can never tell you the
+# marker set still matches the installed `claude`. Only a local live run does.
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [ "3.11", "3.12", "3.13", "3.14" ]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Run tests
+        run: pytest
+
+      # Replaying the committed session end to end is the one check that says
+      # the counters drain to zero over a whole conversation rather than over a
+      # case someone thought to write a test for.
+      - name: Replay the recorded session, counters must drain
+        run: python -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-drained

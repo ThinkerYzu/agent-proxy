@@ -43,9 +43,21 @@ a bare `--resume`, and `--fork-session`. Keep that id and `agent-proxy
 Every SPEC requirement, constraint and success criterion that can be checked
 without a client has a test naming it, in `tests/requirements/`.
 
-Not yet done: neither client has migrated, so bzdash and ADE still spawn
-claudejson. That migration is work in *their* repositories — this one supplies
-the protocol and the reference client to code against.
+Both clients have migrated — [r2d2box](https://github.com/ThinkerYzu/r2d2box),
+which [agent-desktop-env](https://github.com/ThinkerYzu/agent-desktop-env)
+mounts, and bzdash — so claudejson is retired.
+
+## Installing
+
+Not on PyPI: the package is useless without a `claude` binary it cannot declare
+as a dependency. Install from a release tag, which puts an `agent-proxy` on the
+path — the only thing a client needs from this repo:
+
+```bash
+pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.1.0'
+```
+
+[RELEASING.md](RELEASING.md) covers cutting one.
 
 ## Commands
 
@@ -74,6 +86,8 @@ tied to the background command whose completion woke it.
 | Path | What it is |
 |---|---|
 | `API.md` | the stdio protocol reference for clients |
+| `RELEASING.md` | how a release is cut, and what a version number promises |
+| `.github/workflows/` | CI on every push, a GitHub Release on every `v*` tag |
 | `src/agentproxy/turn_tracker.py` | the turn table, the task table, binding and end-of-turn |
 | `src/agentproxy/protocol.py` | the envelope and the stdout writer |
 | `src/agentproxy/proxy.py` | the wiring — every decision, no process IO |
