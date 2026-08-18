@@ -1,7 +1,7 @@
 """Is the inner TUI working, or waiting for input?
 
-This is the whole of what agent-proxy reads off the screen (DESIGN.md
-Decision 5). Every piece of message *content* comes from the transcript, so
+This is the whole of what agent-proxy reads off the screen. Every piece of
+message *content* comes from the transcript, so
 nothing here parses a tool call, a result, or a line of prose — it answers one
 question, plus the two modal dialogs that must be dismissed before the inner
 `claude` will accept a keystroke at all.

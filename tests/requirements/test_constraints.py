@@ -13,8 +13,6 @@ sneaking into turn classification.
 | R7 — no client-initiated cancellation | `test_r7_*` |
 | NFR 3 — counters are self-correcting | `test_nfr_3_*` |
 
-[SPEC § Constraints](../../../../proj_docs/agent-proxy/SPEC.md#constraints) ·
-[SPEC § Resolved Decisions](../../../../proj_docs/agent-proxy/SPEC.md#resolved-decisions)
 """
 
 from __future__ import annotations

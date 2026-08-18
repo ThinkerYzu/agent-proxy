@@ -68,8 +68,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def _open_tailer(session_id: str, tail_mode: str, started_at: datetime) -> TranscriptTailer:
     """Point the tailer at the transcript the inner `claude` is about to write.
 
-    Every session id is known before the spawn (DESIGN Decision 6), so the
-    path is always deterministic and the old directory-diff is gone. Must
+    Every session id is known before the spawn, so the path is always
+    deterministic and the old directory-diff is gone. Must
     still be constructed *before* the inner starts, so a resume seeks past the
     file's existing contents rather than past whatever the inner has appended
     by the time we look.

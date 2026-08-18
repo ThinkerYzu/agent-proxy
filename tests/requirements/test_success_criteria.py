@@ -9,7 +9,6 @@
 | 5 — a client's end-of-turn is its own | `tests/integration/test_live_wrapping.py::test_each_client_wait_resolves_on_its_own_turn_id` |
 | 6 — reconnect is correct | here — `test_criterion_6_*` |
 
-[SPEC § Success Criteria](../../../../proj_docs/agent-proxy/SPEC.md#success-criteria)
 """
 
 from __future__ import annotations

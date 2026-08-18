@@ -5,9 +5,9 @@ with `tests/requirements`. It calls `Proxy` in the same places and the same
 order the real io loop does, and lets a test say exactly what the inner writes
 and when, so what comes out is the byte stream a client would read.
 
-Three of the tests here are [SPEC success criteria](../../../../proj_docs/agent-proxy/SPEC.md)
-2, 4 and 5, which are what Phase 2 is measured by. The rest of the criteria,
-and the functional requirements one by one, are in `tests/requirements`.
+Three of the tests here are success criteria 2, 4 and 5, which are what Phase 2
+is measured by. The rest of the criteria, and the functional requirements one
+by one, are in `tests/requirements`.
 """
 
 from __future__ import annotations
@@ -174,7 +174,7 @@ def test_a_typed_prompt_holds_the_keyboard_until_the_transcript_shows_it(session
 
 
 def test_a_mid_turn_footer_flicker_produces_one_end_of_turn_at_the_real_end(session):
-    """The failure that desyncs bzdash today: the footer settles idle between
+    """The failure that desynced an earlier client: the footer settles idle between
     an assistant text block and the next tool call, and the wrapper calls it
     the end of the turn.
     """
@@ -284,8 +284,8 @@ def test_a_queued_prompt_a_background_task_and_an_unowned_turn_all_drain(session
 
 
 def test_a_task_finishing_mid_turn_makes_no_turn_and_still_decrements(session):
-    """The other half of Decision 4: folded into the running turn, not woken
-    as a new one — and the count has to fall either way."""
+    """The other half of a task's lifecycle: folded into the running turn, not
+    woken as a new one — and the count has to fall either way."""
     session.submit("start the build")
     session.run()
     session.footer_idle = False
@@ -315,8 +315,8 @@ def test_a_task_finishing_mid_turn_makes_no_turn_and_still_decrements(session):
 def test_each_client_wait_resolves_on_its_own_turn_id(session):
     """Prompt A runs, prompt B queues behind it, and an unowned turn fires in
     between. A client waiting on B must ignore the two end-of-turns that reach
-    it first — which positional matching, the mechanism bzdash uses today,
-    cannot do."""
+    it first — which positional matching, the mechanism an earlier client
+    used, cannot do."""
     first = session.submit("A")
     session.run()
     session.footer_idle = False

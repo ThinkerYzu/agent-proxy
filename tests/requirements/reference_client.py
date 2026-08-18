@@ -3,10 +3,9 @@
 This is the client [API.md](../../API.md) describes, written out: it claims a
 turn id from the `ref` it sent, resolves each wait on `turn.id`, and gates its
 composer on `outstanding`. There is no ordinal, no latch and no reconciliation
-timer in it — those are the three mechanisms [success criterion
-1](../../../../proj_docs/agent-proxy/SPEC.md#success-criteria) deletes from the
-real front-ends, and a client that needs none of them is what makes deleting
-them possible.
+timer in it — those are the three mechanisms this protocol exists to delete
+from a real front-end, and a client that needs none of them is what makes
+deleting them possible.
 
 What makes it a test instrument rather than a sample is that it derives the
 three counts a second time, from the events alone, and every test that drives
@@ -103,7 +102,7 @@ class ReferenceClient:
         own — which is what lets a resumed wait resolve.
 
         Every user turn in the reply is this client's, since a proxy serves
-        exactly one client (SPEC R2).
+        exactly one client.
         """
         self.open_user = {t["id"] for t in state["turns"] if t["kind"] == "user"}
         self.open_unowned = {t["id"] for t in state["turns"] if t["kind"] == "unowned"}

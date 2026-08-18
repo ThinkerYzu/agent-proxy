@@ -72,10 +72,8 @@ class Proxy:
         """Tell the client the session is up, and which one it is.
 
         Always the first message on the stream, and its `session_id` is always
-        a real id ([requirement 12]) — it is what a client records to resume
-        this conversation in a later process.
-
-        [requirement 12]: ../../../../proj_docs/agent-proxy/SPEC.md#functional-requirements
+        a real id — it is what a client records to resume this conversation in
+        a later process.
         """
         self._emit([{"type": "ready", "session_id": session_id}])
 
@@ -103,13 +101,14 @@ class Proxy:
 
         `submit` is acknowledged here, before anything reaches the inner
         `claude` — the ack is the client's handle on the turn and it must not
-        wait on the pty (requirement 2). `status` is answered here too and
+        wait on the pty. `status` is answered here too and
         never reaches the keyboard; so is anything the proxy cannot parse.
 
         A command may carry a `ref` of the client's choosing, which comes back
         on the message answering it. Without one the only correspondence
         between a command and its answer is positional — the same ordinal
-        matching R5 rules out for end-of-turn, and it fails the same way here:
+        matching this protocol rules out for end-of-turn, and it fails the same
+        way here:
         a rejected `submit` produces an `error` rather than an `ack`, and a
         client counting acks then binds every later prompt to the wrong turn.
         """

@@ -5,16 +5,16 @@ parsed transcript entries and client submissions, and returns the messages
 those imply; it does no I/O and knows nothing about stdout, which is what
 makes it testable by replaying a recorded session.
 
-Three rules from DESIGN.md carry the design:
+Three rules carry the design:
 
-- **Provenance, not content** (Decision 1). The proxy is the only thing that
+- **Provenance, not content.** The proxy is the only thing that
   types client prompts into the TUI, so a turn is `user` when its initiating
   entry matches the prompt we typed and `unowned` otherwise. No rule here
   inspects an entry to decide whether it "looks like" a prompt.
-- **Two-tier end-of-turn** (Decision 2). Tier 1 — a recognised transcript
+- **Two-tier end-of-turn.** Tier 1 — a recognised transcript
   marker — lives here. Tier 2, the TUI-idle fallback, arrives with the live
   pty and calls `end_running_turn` from the outside.
-- **Derived counters** (Decision 3). `outstanding()` counts the tables; no
+- **Derived counters.** `outstanding()` counts the tables; no
   integer is ever incremented, so no signal can be missed.
 
 Events come back as plain dicts carrying `type`, an optional `turn`, and the
@@ -92,7 +92,7 @@ class BackgroundTask:
     Completing while a turn runs folds the notification into that turn and
     starts nothing; completing while idle starts an unowned turn. The count
     must fall in both cases, which is why tasks have their own table and
-    their own lifecycle (DESIGN.md Decision 4).
+    their own lifecycle.
     """
 
     id: str
@@ -187,8 +187,9 @@ class TurnTracker:
     def end_running_turn(self, basis: str, outcome: str = OUTCOME_SUCCESS) -> list[dict]:
         """End whatever turn is running, on a `basis` no marker supplied.
 
-        The entry point for the TUI-idle fallback (DESIGN.md Decision 2,
-        tier 2). Returns no events when nothing is running.
+        The entry point for the TUI-idle fallback in `fallback.py`, the second
+        of the two end-of-turn tiers. Returns no events when nothing is
+        running.
         """
         if self._running_turn is None:
             return []

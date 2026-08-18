@@ -154,7 +154,7 @@ def test_continue_resolves_to_the_newest_session_itself(tmp_path):
     """`--continue` names no session, so the proxy picks one and says which.
 
     Rewriting to `--resume <id>` is what stops the proxy and the inner
-    disagreeing about which file this session is (DESIGN Decision 6).
+    disagreeing about which file this session is.
     """
     cwd = "/work/thing"
     project_dir = _project_dir(tmp_path, cwd)

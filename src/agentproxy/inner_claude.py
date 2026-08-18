@@ -10,9 +10,7 @@ jobs:
   turn on a keystroke no client can send and deadlocks the session.
 - **Know the transcript path up front** by resolving a session id for every
   invocation, so the tailer opens a deterministic file and the proxy can name
-  the session before it types anything ([requirement 12] / DESIGN Decision 6).
-
-[requirement 12]: ../../../../proj_docs/agent-proxy/SPEC.md#functional-requirements
+  the session before it types anything.
 """
 
 from __future__ import annotations
@@ -144,9 +142,9 @@ def resolve_session(
 ) -> tuple[str, str, list[str]]:
     """Decide which session the inner will run, and how to read its transcript.
 
-    Returns `(session_id, tail_mode, argv)`. The session id is never None —
-    that is [requirement 12], and the reason this function rewrites the
-    caller's session flags instead of forwarding them: every invocation is
+    Returns `(session_id, tail_mode, argv)`. The session id is never None,
+    which is why this function rewrites the caller's session flags instead of
+    forwarding them: every invocation is
     turned into one that names its session explicitly.
 
     `tail_mode` is one of:

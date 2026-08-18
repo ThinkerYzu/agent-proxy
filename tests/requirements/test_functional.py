@@ -22,7 +22,6 @@ asserts the requirement over a whole session instead of repeating the unit.
 | 11 — no turn may hang without an end-of-turn | `test_requirement_11_*` (four tests) |
 | 12 — session identity stated first, and always | `test_requirement_12_*` (three tests) |
 
-[SPEC § Functional Requirements](../../../../proj_docs/agent-proxy/SPEC.md#functional-requirements)
 """
 
 from __future__ import annotations
@@ -256,8 +255,8 @@ def test_requirement_3_a_background_task_is_not_a_turn_kind(session):
     """The requirement's third kind is a message type, not a `turn.kind`.
 
     A background task has no turn to belong to — it outlives the one that
-    launched it, and finishing may start one, fold into one, or start nothing
-    (DESIGN Decision 4). So `task_start` and `task_end` carry no `turn` field,
+    launched it, and finishing may start one, fold into one, or start nothing.
+    So `task_start` and `task_end` carry no `turn` field,
     and `background` never appears as a kind.
     """
     start_turn(session, "start the build")
@@ -312,7 +311,7 @@ def test_requirement_4_a_client_never_has_to_judge_whether_an_end_was_real(sessi
     The turn below goes idle-looking twice in the middle: after its first
     answer, and again between two tool calls. Deciding whether either was the
     end is the judgement call this requirement removes, and getting it wrong
-    is the premature `result` that desyncs bzdash today.
+    is the premature `result` that desynced an earlier client.
     """
     turn_id = start_turn(session, "build it")
     for _ in range(2):
@@ -685,9 +684,7 @@ def test_requirement_12_the_session_id_is_the_first_thing_a_client_reads(session
 def test_requirement_12_every_invocation_names_a_session(tmp_path):
     """"Always" is the load-bearing word: the invocations that could not name
     a session before are exactly the recovery ones, so a null id would be
-    missing where it matters most ([R9]).
-
-    [R9]: ../../../../proj_docs/agent-proxy/SPEC.md#resolved-decisions
+    missing where it matters most.
     """
     from agentproxy import inner_claude
     from agentproxy.transcript_tailer import encode_cwd

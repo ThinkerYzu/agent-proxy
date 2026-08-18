@@ -247,7 +247,8 @@ def said(messages):
 
 
 def test_the_session_id_a_client_is_given_is_one_it_can_resume(tmp_path):
-    """The whole point of requirement 12: record the id, come back later.
+    """The whole point of naming the session up front: record the id, come
+    back later.
 
     Three sessions against a real `claude` — start one and remember its id,
     resume it by that id, then let `--continue` find it with no id at all.
@@ -259,7 +260,7 @@ def test_the_session_id_a_client_is_given_is_one_it_can_resume(tmp_path):
     )
     assert first[0]["type"] == "ready"
     session_id = first[0]["session_id"]
-    assert session_id, "requirement 12: the first message must name the session"
+    assert session_id, "the first message must name the session"
     print(f"session 1: {session_id}\n" + summarise(first))
 
     # Resumed by the id the client was handed.

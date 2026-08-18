@@ -1,17 +1,18 @@
 # agent-proxy
 
 A stdio wrapper around an interactive `claude` TUI that **states** turn
-boundaries instead of leaving clients to infer them. It replaces
-[claudejson](../claudejson/), inheriting its pty and transcript machinery and
+boundaries instead of leaving clients to infer them. It replaces claudejson, an
+earlier unpublished wrapper, inheriting its pty and transcript machinery and
 replacing its turn accounting.
 
 [API.md](API.md) is the wire contract — every command, every message, and what
 a client may assume about the order. Read it first if you are writing a client.
 
-Design docs live in `proj_docs/agent-proxy/` — [SPEC](../../proj_docs/agent-proxy/SPEC.md)
-for what and why, [DESIGN](../../proj_docs/agent-proxy/DESIGN.md) for how,
-[IMPLEMENTATION-GUIDE](../../proj_docs/agent-proxy/IMPLEMENTATION-GUIDE.md) for
-the code-level plan.
+The design documents that argue *why* the protocol has this shape are not
+published with the code. What is here is meant to stand on its own: API.md for
+the contract, [RELEASING.md](RELEASING.md) for cutting a version, and the
+module docstrings for the reasoning — `turn_tracker.py` on what moves a turn,
+`fallback.py` on why a marker alone cannot be relied on to end one.
 
 ## Status
 
@@ -40,12 +41,12 @@ a bare `--resume`, and `--fork-session`. Keep that id and `agent-proxy
 --resume <id>` picks the conversation up in a later process; see
 [API.md](API.md#sessions) for the full table.
 
-Every SPEC requirement, constraint and success criterion that can be checked
+Every requirement, constraint and success criterion that can be checked
 without a client has a test naming it, in `tests/requirements/`.
 
 Both clients have migrated — [r2d2box](https://github.com/ThinkerYzu/r2d2box),
 which [agent-desktop-env](https://github.com/ThinkerYzu/agent-desktop-env)
-mounts, and bzdash — so claudejson is retired.
+mounts, and a second client that is not public — so claudejson is retired.
 
 ## Installing
 

@@ -1,7 +1,7 @@
 """Tail the inner `claude`'s on-disk session transcript.
 
 Why this exists: the TUI parser sees the compact rendered form of every
-tool call (e.g. `Called bzdash (ctrl+o to expand)`) and never the underlying
+tool call (e.g. `Called some-server (ctrl+o to expand)`) and never the underlying
 tool name, structured args, or full result. The inner `claude` writes the
 full ground truth as JSONL to `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`
 as the session progresses. Tailing that file gives the wrapper the real

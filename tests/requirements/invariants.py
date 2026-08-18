@@ -3,9 +3,9 @@
 Each function here reads a whole captured stream and raises on the first
 violation. They are separated from the tests that call them because the same
 properties are asserted twice over: once against a short session built to
-exercise one requirement, and once against the 30-turn soak of [success
-criterion 3](../../../../proj_docs/agent-proxy/SPEC.md#success-criteria), where
-what matters is that nothing drifts over a long run.
+exercise one requirement, and once against the 30-turn soak in
+`test_success_criteria.py`, where what matters is that nothing drifts over a
+long run.
 
 A note on `turn`: the field is absent from messages belonging to no turn —
 `ready`, `error`, `state`, and the two task messages — and may also be absent
@@ -83,7 +83,7 @@ def end_of_turn_is_typed(messages: list[dict]) -> None:
 
 
 def one_turn_at_a_time(messages: list[dict]) -> None:
-    """No turn starts while another is still running (SPEC R4).
+    """No turn starts while another is still running.
 
     This is what makes attribution unambiguous: a `text` or `tool_use` message
     can belong to only one turn, so the id on it is a fact rather than a

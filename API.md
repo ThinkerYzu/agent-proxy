@@ -4,11 +4,10 @@ The wire contract between a client and `agent-proxy`. Everything a client can
 say, everything the proxy can say back, and what it is allowed to assume about
 the order.
 
-This is the reference; for *why* the protocol has this shape see
-[SPEC](../../proj_docs/agent-proxy/SPEC.md) (requirements) and
-[DESIGN](../../proj_docs/agent-proxy/DESIGN.md) (decisions). Where this
-document and the code disagree, the code is `src/agentproxy/protocol.py` and
-`src/agentproxy/turn_tracker.py`.
+This is the reference. Where it and the code disagree, the code is
+`src/agentproxy/protocol.py` and `src/agentproxy/turn_tracker.py`; the
+reasoning behind each rule is in the module docstrings, `turn_tracker.py` for
+what moves a turn and `fallback.py` for what ends one no marker ended.
 
 ## Invocation
 
@@ -163,8 +162,7 @@ A command that arrives as an unparseable line has no `ref` the proxy can read,
 so that one `error` is unattributable by construction. Everything else is.
 
 There is no cancellation. An acknowledged prompt always runs: no withdraw for
-a queued turn, no interrupt for a running one
-([R7](../../proj_docs/agent-proxy/SPEC.md#resolved-decisions)).
+a queued turn, no interrupt for a running one.
 
 ## Message types
 
@@ -374,9 +372,8 @@ python3 -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-dra
 ## Versioning
 
 The protocol is unversioned and has one consumer at a time; the proxy tracks
-whatever `claude` is installed rather than a pinned version
-([constraint 3](../../proj_docs/agent-proxy/SPEC.md#constraints)). Two things
-follow for a client:
+whatever `claude` is installed rather than a pinned version. Two things follow
+for a client:
 
 - **Ignore unknown message types and unknown fields.** New types are added
   when `claude` grows a shape worth reporting; the envelope does not change.

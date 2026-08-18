@@ -77,8 +77,8 @@ def test_an_idle_footer_over_quiet_transcript_ends_the_turn(fallback, clock):
 def test_a_flicker_shorter_than_the_grace_period_ends_nothing(fallback, clock):
     """The mid-turn footer flicker: idle for a moment between two tool calls.
 
-    Calling that the end of the turn is the premature `result` that desyncs
-    bzdash today, which is why the grace period has to outlast it.
+    Calling that the end of the turn is the premature `result` that desynced
+    an earlier client, which is why the grace period has to outlast it.
     """
     fallback.note_frame(is_idle=True)
     clock.advance(IDLE_AFTER - 1)

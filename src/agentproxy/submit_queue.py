@@ -1,10 +1,10 @@
 """Accepted prompts, waiting their turn at the keyboard.
 
 A client may submit whenever it likes; the inner `claude` accepts a prompt
-only when it is idle and nothing is running, and it runs one turn at a time
-(SPEC R4). This queue is what sits between the two — a plain FIFO, because
-there is no cancellation (SPEC R7): a prompt leaves it by being typed, or by
-the session failing.
+only when it is idle and nothing is running, and it runs one turn at a time.
+This queue is what sits between the two — a plain FIFO, because the protocol
+has no cancellation: a prompt leaves it by being typed, or by the session
+failing.
 
 The queue holds turns; the io loop holds the pty payloads that `accept`
 returns. They stay in step because each accepted prompt produces exactly one
