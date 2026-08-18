@@ -1,9 +1,9 @@
 """Tier 2 of end-of-turn: closing a turn no marker closed.
 
 Tier 1 — a recognised transcript marker — lives in `turn_tracker`. This is the
-other tier, and it is an everyday path rather than an error handler: the marker set is open (`compact_boundary` was found only by
-surveying 412 transcripts), so a turn shape nobody has catalogued yet must
-still end. A late end-of-turn is a recoverable client bug; a missing one hangs
+other tier, and it is an everyday path rather than an error handler: the
+marker set is open (`compact_boundary` was found only by surveying 412
+transcripts), so a turn shape nobody has catalogued yet must still end. A late end-of-turn is a recoverable client bug; a missing one hangs
 the UI forever.
 
 Four conditions can close a turn here, and each reports its own `basis` so a
@@ -62,9 +62,8 @@ BASIS_UNMATCHED = "fallback:unmatched"
 # outlast the mid-turn footer flicker — the footer reads idle for a moment
 # between an assistant text block and the next tool call, and calling that the
 # end of the turn is the premature `result` that desynced an earlier client.
-# Both
-# clocks must be quiet, and the flicker resets the transcript one, so this is
-# already conservative at a few seconds; 8 buys margin for a slow frame.
+# Both clocks must be quiet, and the flicker resets the transcript one, so this
+# is already conservative at a few seconds; 8 buys margin for a slow frame.
 IDLE_AFTER_S = float(os.environ.get("AGENTPROXY_FALLBACK_IDLE_S", "8"))
 # No pty bytes and no transcript entries for this long. A working turn paints
 # its spinner about once a second, so this cannot fire on one.
