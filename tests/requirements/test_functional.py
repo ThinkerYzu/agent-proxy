@@ -648,6 +648,58 @@ def test_requirement_11_the_ceiling_ends_a_turn_nothing_else_would(session):
     assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
 
 
+def test_requirement_11_a_prompt_the_transcript_never_shows_still_ends(session):
+    """The gap that wedged a real session: a typed prompt no entry ever matches.
+
+    "Every turn ends" has to cover the turn that never started running. A
+    prompt the TUI altered on its way in — a trailing backslash, read as a
+    line continuation and dropped — never matches its transcript entry, so it
+    is not the running turn and the other three tiers cannot reach it. Left
+    open it holds `outstanding.user` above zero forever, and because a typed
+    prompt owns the keyboard, no later prompt is ever typed either: the
+    session takes no further input for as long as it lives.
+    """
+    turn_id = session.submit("do we have docs on glyph rendering?")
+    session.run(ticks=2)
+    assert session.typed, "the prompt should have been typed"
+    # The inner answers, but under an entry that does not match what was
+    # typed, so the work lands on an unowned turn and the user's turn is left
+    # waiting for an entry that is never coming.
+    session.writes(user_text("something else entirely"), assistant_text("done"), marker())
+    session.run(ticks=4)
+    assert session.tracker.outstanding()["user"] == 1
+
+    session.footer_idle = True
+    session.run(ticks=8, advance=10.0, pty_quiet=True)
+
+    ends = [m for m in session.of_type("turn_end") if m["turn"]["id"] == turn_id]
+    assert ends, "the typed prompt was never ended"
+    assert ends[0]["basis"] == "fallback:unmatched"
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.proxy.is_ready_to_send(), "the keyboard is still held"
+
+
+def test_requirement_11_a_prompt_not_yet_picked_up_is_not_cut_short(session):
+    """The case the tier above must not mistake for a lost prompt.
+
+    A prompt typed a moment ago and not yet echoed looks identical — no
+    running turn, nothing in the transcript — so an idle-reading footer alone
+    is not evidence. Only pty silence tells the two apart.
+    """
+    turn_id = session.submit("a slow one")
+    session.run(ticks=2)
+    session.footer_idle = True
+    session.run(ticks=12, advance=1.0)          # idle clock well past 8s, pty alive
+    assert session.of_type("turn_end") == []
+    assert session.tracker.outstanding()["user"] == 1
+
+    session.answers("a slow one")
+    session.run(ticks=4)
+    ends = session.of_type("turn_end")
+    assert [m["turn"]["id"] for m in ends] == [turn_id]
+    assert ends[0]["basis"] != "fallback:unmatched"
+
+
 def test_requirement_11_a_marker_arriving_after_the_fallback_opens_no_phantom(session):
     """The late signal a self-correcting counter has to survive.
 

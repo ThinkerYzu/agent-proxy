@@ -195,6 +195,27 @@ class TurnTracker:
             return []
         return self._end_turn(self._running_turn, basis, outcome)
 
+    def end_typed_turn(self, basis: str, outcome: str = OUTCOME_SUCCESS) -> list[dict]:
+        """End a prompt that was typed and never recognised in the transcript.
+
+        The other half of `end_running_turn`, and the one that keeps "every
+        turn ends" true. A typed turn is not the running turn — it is waiting
+        for the transcript entry that would make it one — so the fallback tier
+        cannot reach it through `end_running_turn`, and nothing else ever
+        closes it. Before this existed, a prompt the TUI altered on its way in
+        (a trailing backslash, eaten as a line continuation) left a `user` turn
+        open forever: `outstanding.user` stuck at 1, and `is_ready_to_send`
+        blocked on `typed_turn` so no later prompt could be typed either.
+
+        The caller decides when: `Proxy.on_iteration` asks only once the pty
+        has been silent as well as the transcript, never on the idle-footer
+        clock alone — a prompt typed a moment ago and not yet picked up looks
+        the same from here, and must not be cut short.
+        """
+        if self._typed_turn is None:
+            return []
+        return self._end_turn(self._typed_turn, basis, outcome)
+
     # ------------------------------------------------------------------
     # Transcript side
     # ------------------------------------------------------------------
@@ -568,12 +589,21 @@ class TurnTracker:
 
 
 def _normalise(text: str) -> str:
-    """Collapse whitespace so a typed prompt matches its transcript entry.
+    """Reverse the TUI's own edits so a typed prompt matches its transcript entry.
 
-    The TUI re-wraps what it is given, so the text in the transcript is not
-    byte-identical to what the proxy typed.
+    The text in the transcript is not byte-identical to what the proxy typed,
+    and every difference here is something the TUI did to it:
+
+    - **Re-wrapping.** Collapsed by comparing whitespace-normalised text.
+    - **A trailing backslash.** The TUI reads it as a line continuation and
+      eats it, so a prompt ending in `\\` reaches `claude` without one. Left
+      in, the comparison fails and the prompt is never recognised as the one
+      the proxy typed — see `end_typed_turn` for what that used to cost.
+
+    Both sides go through this, so stripping is symmetric: a backslash the TUI
+    keeps is stripped from the transcript entry too, and the two still match.
     """
-    return " ".join(text.split())
+    return " ".join(text.split()).rstrip("\\")
 
 
 def _flatten_text(content: object) -> str:

@@ -159,6 +159,41 @@ def test_unmatched_entry_leaves_the_typed_prompt_outstanding(tracker):
     assert tracker.outstanding() == {"user": 1, "unowned": 1, "background": 0}
 
 
+def test_a_prompt_the_tui_ate_a_trailing_backslash_from_still_binds(tracker):
+    """The TUI reads a trailing `\\` as a line continuation and drops it.
+
+    The prompt reaches `claude` one character shorter than it was typed, and
+    before this was handled the entry never matched: the turn stayed queued,
+    `outstanding.user` stuck at 1, and the session took no further prompt.
+    """
+    turn, _ = tracker.submit("do we have docs on glyph rendering?\\")
+    tracker.mark_typed(turn)
+    tracker.on_entry(user_text("do we have docs on glyph rendering?"))
+    assert turn.state == STATE_RUNNING
+    assert tracker.outstanding() == {"user": 1, "unowned": 0, "background": 0}
+
+
+def test_end_typed_turn_closes_a_prompt_the_transcript_never_showed(tracker):
+    """The only way out for a typed turn that no entry will ever match."""
+    turn, _ = tracker.submit("mine")
+    tracker.mark_typed(turn)
+    tracker.on_entry(user_text("not mine"))
+    tracker.on_entry(assistant_text())
+    tracker.on_entry(marker())
+    assert tracker.outstanding()["user"] == 1
+
+    events = tracker.end_typed_turn("fallback:unmatched")
+    assert types_of(events) == ["turn_end"]
+    assert events[0]["basis"] == "fallback:unmatched"
+    assert turn.state == STATE_ENDED
+    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert tracker.typed_turn is None
+
+
+def test_end_typed_turn_does_nothing_with_no_prompt_outstanding(tracker):
+    assert tracker.end_typed_turn("fallback:unmatched") == []
+
+
 def test_queued_prompt_binds_after_the_unowned_turn_ends(tracker):
     turn, _ = tracker.submit("mine")
     tracker.mark_typed(turn)

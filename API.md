@@ -282,6 +282,7 @@ tier 2 is the fallback that makes "a turn hangs forever" impossible.
 | `fallback:idle` | 2 | TUI footer idle and transcript quiet for `AGENTPROXY_FALLBACK_IDLE_S` |
 | `fallback:quiet` | 2 | pty silent and transcript quiet for `AGENTPROXY_FALLBACK_QUIET_S`, whatever the footer says |
 | `fallback:stalled` | 2 | transcript quiet for `AGENTPROXY_FALLBACK_STALL_S`, nothing else considered |
+| `fallback:unmatched` | 2 | the prompt was typed but never appeared in the transcript, for `AGENTPROXY_FALLBACK_UNMATCHED_S`, with nothing running |
 | `error` | — | the turn was killed by a failure |
 
 A client can treat a `fallback:*` end as slightly less certain, but the more
@@ -289,6 +290,14 @@ useful reading is operational: the marker set is open, so a `fallback:*` rate
 above roughly zero means `claude` grew a turn shape worth teaching to the
 proxy. `fallback:stalled` should be vanishingly rare — it can fire on a turn
 that is genuinely alive, such as one running a single long foreground command.
+
+`fallback:unmatched` is the one that says something went wrong on the way *in*
+rather than on the way out. A turn ending this way was acknowledged and typed,
+and the TUI then altered or dropped it, so the entry that would have bound it
+never arrived — nothing the client did, and nothing it can retry differently.
+Whatever the inner `claude` did in the meantime is reported, correctly, as an
+`unowned` turn. Any rate above zero is worth chasing: it means prompts are
+reaching `claude` in a different form from the one the client sent.
 
 ## Failure and shutdown
 

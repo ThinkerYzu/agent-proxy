@@ -15,6 +15,7 @@ can tell which one fired:
 | `fallback:idle`    | footer idle **and** transcript quiet         | a turn whose marker we do not recognise |
 | `fallback:quiet`   | pty silent **and** transcript quiet          | the footer reading is stale |
 | `fallback:stalled` | transcript quiet, nothing else considered    | last resort — the ceiling |
+| `fallback:unmatched` | a typed prompt unrecognised for too long, with nothing running | the prompt the TUI altered on its way in |
 
 `fallback:quiet` exists because the footer reading is not always trustworthy:
 a `--resume` repaint paints an active footer and then stops emitting frames,
@@ -43,6 +44,9 @@ from typing import Callable, Optional
 BASIS_IDLE = "fallback:idle"
 BASIS_QUIET = "fallback:quiet"
 BASIS_STALLED = "fallback:stalled"
+# Reported instead of the three above when what ended was a prompt the
+# transcript never showed, so the two cases can be told apart in the logs.
+BASIS_UNMATCHED = "fallback:unmatched"
 
 # Footer idle and transcript quiet for this long ends the turn. It has to
 # outlast the mid-turn footer flicker — the footer reads idle for a moment
@@ -55,6 +59,12 @@ IDLE_AFTER_S = float(os.environ.get("AGENTPROXY_FALLBACK_IDLE_S", "8"))
 # No pty bytes and no transcript entries for this long. A working turn paints
 # its spinner about once a second, so this cannot fire on one.
 QUIET_AFTER_S = float(os.environ.get("AGENTPROXY_FALLBACK_QUIET_S", "60"))
+
+# How long a typed prompt may go unrecognised before the entry that would have
+# matched it is presumed never to be coming. It is a plain age rather than a
+# silence: a prompt this old that the transcript has still not echoed was
+# altered on the way in or dropped, and no amount of further waiting fixes it.
+UNMATCHED_AFTER_S = float(os.environ.get("AGENTPROXY_FALLBACK_UNMATCHED_S", "60"))
 # The ceiling: transcript quiet this long ends the turn on nothing else.
 STALL_AFTER_S = float(os.environ.get("AGENTPROXY_FALLBACK_STALL_S", "1800"))
 
@@ -73,13 +83,16 @@ class FallbackEot:
         idle_after_s: float = IDLE_AFTER_S,
         quiet_after_s: float = QUIET_AFTER_S,
         stall_after_s: float = STALL_AFTER_S,
+        unmatched_after_s: float = UNMATCHED_AFTER_S,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._idle_after_s = idle_after_s
         self._quiet_after_s = quiet_after_s
         self._stall_after_s = stall_after_s
+        self._unmatched_after_s = unmatched_after_s
         self._clock = clock
         self._idle_since: Optional[float] = None
+        self._typed_since: Optional[float] = None
         self._last_transcript = clock()
 
     def note_turn_start(self) -> None:
@@ -94,6 +107,30 @@ class FallbackEot:
     def note_transcript(self) -> None:
         """A transcript entry arrived — the turn is demonstrably still working."""
         self._last_transcript = self._clock()
+
+    def note_typed(self) -> None:
+        """A prompt's keystrokes have gone out; start ageing it.
+
+        Kept apart from `note_turn_start`, which any turn resets — including
+        the unowned one that runs *instead* of the prompt when the match
+        fails, which is exactly when this clock has to keep running.
+        """
+        self._typed_since = self._clock()
+
+    def note_typed_matched(self) -> None:
+        """The typed prompt is no longer outstanding: recognised, or ended."""
+        self._typed_since = None
+
+    def typed_is_lost(self) -> bool:
+        """True once the typed prompt has gone unrecognised too long to arrive.
+
+        The caller pairs this with "nothing is running": together they mean the
+        transcript entry that would have bound the prompt is not coming, and
+        the turn has to be ended some other way or it never ends at all.
+        """
+        if self._typed_since is None:
+            return False
+        return self._clock() - self._typed_since >= self._unmatched_after_s
 
     def note_frame(self, is_idle: bool) -> None:
         """Record a frame's footer reading, keeping the idle clock running."""

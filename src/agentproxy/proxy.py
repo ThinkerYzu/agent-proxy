@@ -18,7 +18,7 @@ import time
 from typing import Callable, Optional
 
 from agentproxy import log
-from agentproxy.fallback import FallbackEot
+from agentproxy.fallback import BASIS_UNMATCHED, FallbackEot
 from agentproxy.liveness import Liveness
 from agentproxy.protocol import Emitter
 from agentproxy.submit_queue import SubmitQueue
@@ -161,6 +161,7 @@ class Proxy:
 
     def on_typed(self, message: dict) -> None:
         """The keystrokes for a prompt are going out now."""
+        self._fallback.note_typed()
         turn = self._queue.take(message)
         if turn is not None:
             self._tracker.mark_typed(turn)
@@ -193,18 +194,39 @@ class Proxy:
             self._activity["last_activity"] = time.monotonic()
             self._emit(self._tracker.on_entry(entry))
 
-        if self._tracker.running_turn is None:
+        running = self._tracker.running_turn
+        typed = self._tracker.typed_turn
+        if typed is None:
+            self._fallback.note_typed_matched()
+        if running is None and typed is None:
             return
         # Absent `last_pty` means the io loop has not read yet, which is the
         # opposite of silence — default to now rather than to the epoch, so a
         # missing clock can never look like a minute of quiet.
         last_pty = self._activity.get("last_pty") or time.monotonic()
         basis = self._fallback.basis(last_pty)
-        if basis is not None:
-            log.log_text(
-                "proxy", f"{self._tracker.running_turn.id} ended on {basis}"
-            )
+        if basis is None:
+            return
+        if running is not None:
+            log.log_text("proxy", f"{running.id} ended on {basis}")
             self._emit(self._tracker.end_running_turn(basis))
+            return
+        # Nothing is running and a typed prompt is still unrecognised. Ending
+        # it here is what stops one altered prompt wedging the session — the
+        # turn would otherwise hold `outstanding.user` above zero forever, and
+        # `is_ready_to_send` would refuse to type anything behind it.
+        #
+        # What separates this from a prompt merely slow to be picked up is the
+        # prompt's own age, not which clock fired: both look like a quiet
+        # transcript with nothing running, seconds after typing.
+        if not self._fallback.typed_is_lost():
+            return
+        log.log_text(
+            "proxy",
+            f"{typed.id} was typed but never seen in the transcript; "
+            f"ending it ({basis})",
+        )
+        self._emit(self._tracker.end_typed_turn(BASIS_UNMATCHED))
 
     def should_stop(self) -> bool:
         """True when the client has gone and nothing is owed to it.
