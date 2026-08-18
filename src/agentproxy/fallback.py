@@ -6,16 +6,17 @@ surveying 412 transcripts), so a turn shape nobody has catalogued yet must
 still end. A late end-of-turn is a recoverable client bug; a missing one hangs
 the UI forever.
 
-Three conditions can close a turn here, in falling order of confidence, and
-each reports its own `basis` so a client — and whoever is reading the logs —
-can tell which one fired:
+Four conditions can close a turn here, and each reports its own `basis` so a
+client — and whoever is reading the logs — can tell which one fired. The first
+three end the turn that is running, in falling order of confidence. The fourth
+ends one that never started running:
 
-| `basis`            | Condition                                    | The case it covers |
-|--------------------|----------------------------------------------|--------------------|
-| `fallback:idle`    | footer idle **and** transcript quiet         | a turn whose marker we do not recognise |
-| `fallback:quiet`   | pty silent **and** transcript quiet          | the footer reading is stale |
-| `fallback:stalled` | transcript quiet, nothing else considered    | last resort — the ceiling |
-| `fallback:unmatched` | a typed prompt unrecognised for too long, with nothing running | the prompt the TUI altered on its way in |
+| `basis`              | Condition                                                 | The case it covers |
+|----------------------|-----------------------------------------------------------|--------------------|
+| `fallback:idle`      | footer idle **and** transcript quiet                      | a turn whose marker we do not recognise |
+| `fallback:quiet`     | pty silent **and** transcript quiet                       | the footer reading is stale |
+| `fallback:stalled`   | transcript quiet, nothing else considered                 | last resort — the ceiling |
+| `fallback:unmatched` | a typed prompt unrecognised for too long, nothing running | a prompt the TUI altered on its way in |
 
 `fallback:quiet` exists because the footer reading is not always trustworthy:
 a `--resume` repaint paints an active footer and then stops emitting frames,
@@ -30,8 +31,17 @@ running longer than the threshold writes nothing to the transcript and keeps
 the spinner painting — so it is set far out, and its whole job is to make
 "hangs forever" impossible. Anything but a near-zero rate of it is a bug.
 
-A rate above roughly zero on *any* of the three is the signal that `claude`
-grew a turn shape worth teaching to `MARKER_BASIS`.
+`fallback:unmatched` is the odd one out, and the only one that fires with
+nothing running. A prompt the TUI altered on its way in never matches the
+transcript entry that would have made it the running turn, so the three clocks
+above — all of which end the running turn — cannot reach it, and it stays
+outstanding for the life of the process. `TurnTracker.end_typed_turn` is what
+ends it.
+
+A rate above roughly zero on any of the first three is the signal that `claude`
+grew a turn shape worth teaching to `MARKER_BASIS`. `fallback:unmatched` says
+something else: prompts are reaching `claude` in a different form from the one
+the client sent, which no marker would fix.
 """
 
 from __future__ import annotations
@@ -117,8 +127,8 @@ class FallbackEot:
         """
         self._typed_since = self._clock()
 
-    def note_typed_matched(self) -> None:
-        """The typed prompt is no longer outstanding: recognised, or ended."""
+    def note_typed_cleared(self) -> None:
+        """No prompt is outstanding any more — it was recognised, or ended."""
         self._typed_since = None
 
     def typed_is_lost(self) -> bool:

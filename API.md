@@ -67,6 +67,7 @@ Two things worth knowing:
 | `AGENTPROXY_FALLBACK_IDLE_S` | `8` | footer idle + transcript quiet for this long ends a turn |
 | `AGENTPROXY_FALLBACK_QUIET_S` | `60` | pty silent + transcript quiet for this long ends a turn |
 | `AGENTPROXY_FALLBACK_STALL_S` | `1800` | the ceiling — transcript quiet this long ends a turn regardless |
+| `AGENTPROXY_FALLBACK_UNMATCHED_S` | `60` | a typed prompt unrecognised this long, with nothing running, ends |
 | `AGENTPROXY_SETTLE_QUIESCENCE_S` | `0.5` | how long to wait after the first idle frame before typing |
 | `CLAUDEJSON_SEND_QUIESCENCE_S` | `0.7` | pty quiet required before keystrokes go out (inherited name) |
 | `CLAUDEJSON_RESUBMIT_QUIESCENCE_S` | `1.5` | pty quiet required before re-sending a submit CR (inherited name) |

@@ -202,15 +202,16 @@ class TurnTracker:
         turn ends" true. A typed turn is not the running turn — it is waiting
         for the transcript entry that would make it one — so the fallback tier
         cannot reach it through `end_running_turn`, and nothing else ever
-        closes it. Before this existed, a prompt the TUI altered on its way in
-        (a trailing backslash, eaten as a line continuation) left a `user` turn
-        open forever: `outstanding.user` stuck at 1, and `is_ready_to_send`
-        blocked on `typed_turn` so no later prompt could be typed either.
+        closes it. Without this, a prompt the TUI altered on its way in — a
+        trailing backslash, eaten as a line continuation — leaves a `user` turn
+        open for the life of the process: `outstanding.user` stuck at 1, and
+        `is_ready_to_send` blocked on `typed_turn`, so no later prompt is typed
+        either.
 
-        The caller decides when: `Proxy.on_iteration` asks only once the pty
-        has been silent as well as the transcript, never on the idle-footer
-        clock alone — a prompt typed a moment ago and not yet picked up looks
-        the same from here, and must not be cut short.
+        When to call it is `Proxy.on_iteration`'s decision, and it turns on the
+        prompt's age: a prompt typed a moment ago and not yet picked up looks
+        identical from here, so only `FallbackEot.typed_is_lost` tells the two
+        apart.
         """
         if self._typed_turn is None:
             return []

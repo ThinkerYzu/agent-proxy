@@ -197,7 +197,7 @@ class Proxy:
         running = self._tracker.running_turn
         typed = self._tracker.typed_turn
         if typed is None:
-            self._fallback.note_typed_matched()
+            self._fallback.note_typed_cleared()
         if running is None and typed is None:
             return
         # Absent `last_pty` means the io loop has not read yet, which is the
@@ -211,20 +211,20 @@ class Proxy:
             log.log_text("proxy", f"{running.id} ended on {basis}")
             self._emit(self._tracker.end_running_turn(basis))
             return
-        # Nothing is running and a typed prompt is still unrecognised. Ending
-        # it here is what stops one altered prompt wedging the session — the
-        # turn would otherwise hold `outstanding.user` above zero forever, and
-        # `is_ready_to_send` would refuse to type anything behind it.
+        # Ending an unrecognised typed prompt here is what stops one altered
+        # prompt wedging the session.
         #
-        # What separates this from a prompt merely slow to be picked up is the
-        # prompt's own age, not which clock fired: both look like a quiet
-        # transcript with nothing running, seconds after typing.
+        # Left open, the turn holds `outstanding.user` above zero for the life
+        # of the process, and `is_ready_to_send` refuses to type anything
+        # behind it. What separates a lost prompt from one merely slow to be
+        # picked up is the prompt's own age, not which clock fired: both look
+        # like a quiet transcript with nothing running, seconds after typing.
         if not self._fallback.typed_is_lost():
             return
         log.log_text(
             "proxy",
             f"{typed.id} was typed but never seen in the transcript; "
-            f"ending it ({basis})",
+            f"ended on {BASIS_UNMATCHED}",
         )
         self._emit(self._tracker.end_typed_turn(BASIS_UNMATCHED))
 

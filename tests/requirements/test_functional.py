@@ -683,8 +683,10 @@ def test_requirement_11_a_prompt_not_yet_picked_up_is_not_cut_short(session):
     """The case the tier above must not mistake for a lost prompt.
 
     A prompt typed a moment ago and not yet echoed looks identical — no
-    running turn, nothing in the transcript — so an idle-reading footer alone
-    is not evidence. Only pty silence tells the two apart.
+    running turn, nothing in the transcript — so a quiet transcript under an
+    idle footer is not evidence. Only the prompt's age tells the two apart,
+    which is why a fresh one survives both clocks running well past their
+    thresholds.
     """
     turn_id = session.submit("a slow one")
     session.run(ticks=2)

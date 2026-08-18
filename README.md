@@ -113,7 +113,7 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-184 tests, none of which needs a `claude` binary. Four more do, and are opt-in
+189 tests, none of which needs a `claude` binary. Four more do, and are opt-in
 twice over — a marker alone deselects nothing on a bare `pytest`, and these
 spend real quota:
 
