@@ -82,7 +82,7 @@ Every line on stdout is one complete JSON object with the same envelope:
 
 ```json
 {"seq": 42, "type": "text", "turn": {"id": "t-7", "kind": "user"},
- "outstanding": {"user": 1, "unowned": 0, "background": 2},
+ "outstanding": {"user": 1, "unowned": 0, "background": 2, "monitor": 0, "agent": 0},
  "text": "The stale search turned up a glib checkout I didn't use."}
 ```
 
@@ -232,7 +232,7 @@ has seen before:
 
 ```json
 {"seq": 88, "type": "state",
- "outstanding": {"user": 1, "unowned": 0, "background": 1},
+ "outstanding": {"user": 1, "unowned": 0, "background": 1, "monitor": 0, "agent": 0},
  "turns": [{"id": "t-4", "kind": "user", "state": "queued", "caused_by": null}],
  "tasks": [{"id": "bunha2ebm", "kind": "shell", "summary": "build firefox"}]}
 ```

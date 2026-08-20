@@ -73,7 +73,7 @@ def pump(
 def test_criterion_3_a_long_mixed_session_never_desyncs(session):
     """Forty-odd turns of the three kinds mixed, checked at every step.
 
-    The client derives the three counts a second time — from `ack`,
+    The client derives the counts a second time — from `ack`,
     `turn_start`, `turn_end`, `task_start` and `task_end` alone — and every
     tick compares that derivation against the counts the proxy stamped. One
     missed decrement anywhere in the run puts the two out of step and stays

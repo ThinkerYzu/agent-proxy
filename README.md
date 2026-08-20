@@ -23,11 +23,11 @@ echo '{"type":"submit","text":"Reply with exactly: PONG"}' | agent-proxy
 ```
 
 ```json
-{"seq": 1, "type": "ready", "outstanding": {"user": 0, "unowned": 0, "background": 0}, "session_id": "…"}
-{"seq": 2, "type": "ack", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0}}
-{"seq": 3, "type": "turn_start", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0}}
-{"seq": 4, "type": "text", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0}, "text": "PONG"}
-{"seq": 5, "type": "turn_end", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 0, "unowned": 0, "background": 0}, "basis": "marker:turn_duration", "outcome": "success", "usage": {"duration_ms": 1670, "output_tokens": 5}}
+{"seq": 1, "type": "ready", "outstanding": {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}, "session_id": "…"}
+{"seq": 2, "type": "ack", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}}
+{"seq": 3, "type": "turn_start", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}}
+{"seq": 4, "type": "text", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}, "text": "PONG"}
+{"seq": 5, "type": "turn_end", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}, "basis": "marker:turn_duration", "outcome": "success", "usage": {"duration_ms": 1670, "output_tokens": 5}}
 ```
 
 Unrecognised arguments go through to the inner `claude`, so `agent-proxy
@@ -71,12 +71,12 @@ pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.1.0'
 
 ## What it emits
 
-Line-delimited JSON. Every message carries `seq`, its `type`, all three
-outstanding counts, and — when it belongs to a turn — that turn's id and kind:
+Line-delimited JSON. Every message carries `seq`, its `type`, every
+outstanding count, and — when it belongs to a turn — that turn's id and kind:
 
 ```json
 {"seq": 41, "type": "turn_start", "turn": {"id": "t-6", "kind": "unowned"},
- "outstanding": {"user": 0, "unowned": 1, "background": 0}, "caused_by": "bsynthimport"}
+ "outstanding": {"user": 0, "unowned": 1, "background": 0, "monitor": 0, "agent": 0}, "caused_by": "bsynthimport"}
 ```
 
 That one line is the project in miniature: a turn nobody prompted, named, and

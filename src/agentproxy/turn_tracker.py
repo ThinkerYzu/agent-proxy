@@ -117,9 +117,10 @@ class BackgroundTask:
     """Work the inner put in the background, tracked apart from any turn.
 
     Three things arrive here: a `run_in_background` shell command, a monitor,
-    and an async subagent. `kind` says which; the lifecycle is the same for
-    all three, because what the counter answers is "is anything still
-    outstanding", and all three are.
+    and an async subagent. `kind` says which, and each gets its own count in
+    `outstanding` — a monitor that watches for the rest of the session reads
+    very differently from a build that will finish. The lifecycle below is the
+    same for all three.
 
     Completing while a turn runs folds the notification into that turn and
     starts nothing; completing while idle starts an unowned turn. The count

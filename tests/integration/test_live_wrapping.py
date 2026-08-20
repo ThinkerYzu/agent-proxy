@@ -226,7 +226,7 @@ def test_a_turn_no_marker_closes_still_ends(session):
 
 
 def test_a_queued_prompt_a_background_task_and_an_unowned_turn_all_drain(session):
-    """The three kinds of outstanding work, in one session, back to zero.
+    """Three kinds of outstanding work, in one session, back to zero.
 
     A prompt queued behind a running turn, a `run_in_background` command that
     outlives the turn that launched it, and the unowned turn its completion
