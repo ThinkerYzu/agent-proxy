@@ -108,11 +108,28 @@ only early, and the next message restates them.
 |---|---|---|
 | `user` | prompts this client submitted, queued and running | that turn's `turn_end` |
 | `unowned` | turns the inner `claude` started on its own | that turn's `turn_end` |
-| `background` | `run_in_background` shell commands still running | that task's `task_end` |
+| `background` | background work still running — see below | that task's `task_end` |
 
 A background task is not a turn. One that finishes while the agent is idle
 starts an unowned turn; one that finishes mid-turn is folded into the running
 turn and starts nothing. That is why the count is separate.
+
+Three kinds of work are counted here, named by `task.kind` on both task
+messages:
+
+| `kind` | What it is |
+|---|---|
+| `shell` | a `run_in_background` command, or a foreground one promoted on timeout |
+| `monitor` | a watch on a log, a file or a socket, emitting events until stopped |
+| `agent` | a subagent launched to run on its own |
+| `unknown` | the launch was never seen; the task was registered from a notification |
+
+They are counted alike because the count answers one question — is anything
+still outstanding — and all three are. They differ in how long they live: a
+shell command ends when it exits, while a persistent monitor holds the count
+above zero until something stops it, which is the truth about it rather than a
+fault. A client that wants to show them apart reads `kind`; a client that only
+wants to know whether work remains can keep ignoring it.
 
 ## Commands
 
@@ -177,8 +194,8 @@ a queued turn, no interrupt for a running one.
 | `tool_use` | the assistant called a tool | `tool`, `input`, `tool_use_id` |
 | `tool_result` | a tool returned | `tool_use_id`, `content`, `is_error` |
 | `turn_end` | a turn finished | `basis`, `outcome`, `usage` |
-| `task_start` | a background command was launched | `task` (`{id}`), `summary` (string or null) |
-| `task_end` | a background command exited | `task` (`{id}`), `exit_code` (int or null) |
+| `task_start` | background work was launched | `task` (`{id, kind}`), `summary` (string or null) |
+| `task_end` | background work ended | `task` (`{id, kind}`), `status`, `exit_code` (int or null) |
 | `state` | reply to `status` | `turns`, `tasks`, `ref` if the query carried one |
 | `error` | a rejected command, or a session failure | `error` (string), `ref` if a rejected command carried one |
 
@@ -190,8 +207,13 @@ Notes on the fields that carry weight:
   closed by the failure path, not that the agent's answer was wrong.
 - **`turn_end.usage`** holds `duration_ms` (only from a marker that carried
   one) and `output_tokens` (only when non-zero). It can be `{}`.
+- **`task_end.status`** is `completed`, `failed`, `killed` or `stopped` — how
+  the work ended, which `exit_code` alone cannot tell you and which is often
+  absent for anything but a shell command. Every one of the four ends the task
+  and drops the count; do not treat `completed` as the only ending.
 - **`turn_start.caused_by`** is a background task id, tying an unowned turn to
-  the command whose completion woke it.
+  the work whose completion woke it. It always names a task the client has
+  already seen a `task_start` for.
 - **`tool_result`** is the one turn message that can arrive with no `turn`
   field, if the transcript runs ahead of the proxy's turn accounting.
 - **`error`** carries no `turn`. When a failure kills turns, the `error` comes
@@ -204,7 +226,7 @@ has seen before:
 {"seq": 88, "type": "state",
  "outstanding": {"user": 1, "unowned": 0, "background": 1},
  "turns": [{"id": "t-4", "kind": "user", "state": "queued", "caused_by": null}],
- "tasks": [{"id": "bunha2ebm", "summary": "build firefox"}]}
+ "tasks": [{"id": "bunha2ebm", "kind": "shell", "summary": "build firefox"}]}
 ```
 
 Give the `status` a `ref` and the `state` carries it back; two queries in

@@ -73,13 +73,27 @@ def marker(subtype: str = "turn_duration", duration_ms: int = 1000) -> dict:
     return {"type": "system", "subtype": subtype, "durationMs": duration_ms}
 
 
-def notification(task_id: str, tool_use_id: str, exit_code: int = 0) -> str:
+def notification(
+    task_id: str, tool_use_id: str, exit_code: int = 0, status: str = "completed"
+) -> str:
     return (
         "<task-notification>\n"
         f"<task-id>{task_id}</task-id>\n"
         f"<tool-use-id>{tool_use_id}</tool-use-id>\n"
-        "<status>completed</status>\n"
+        f"<status>{status}</status>\n"
         f'<summary>Background command "work" completed (exit code {exit_code})</summary>\n'
+        "</task-notification>"
+    )
+
+
+def monitor_event(task_id: str, tool_use_id: str, event: str = "line") -> str:
+    """A monitor firing an event: a notification with no `<status>` at all."""
+    return (
+        "<task-notification>\n"
+        f"<task-id>{task_id}</task-id>\n"
+        f"<tool-use-id>{tool_use_id}</tool-use-id>\n"
+        f'<summary>Monitor event: "watching"</summary>\n'
+        f"<event>{event}</event>\n"
         "</task-notification>"
     )
 
@@ -360,6 +374,91 @@ def test_a_foreground_command_promoted_on_timeout_is_a_task_too(tracker):
         )
     )
     assert types_of(events) == ["task_start", "tool_result"]
+    assert tracker.outstanding()["background"] == 1
+
+
+@pytest.mark.parametrize("status", ["failed", "killed", "stopped"])
+def test_a_task_that_does_not_complete_still_ends(tracker, status):
+    """The counter must drain on every terminal status, not just success.
+
+    47 of the 309 background tasks in the surveyed corpus never report
+    `completed` — they are killed, they fail, or they are stopped. Absorbing
+    only `completed` left every one of them holding `outstanding.background`
+    above zero for the life of the process, which is the stranded counter this
+    protocol exists to make impossible.
+    """
+    running_user_turn(tracker)
+    launch_background(tracker, "bg1", "toolu_1")
+    events = tracker.on_entry(
+        user_text(notification("bg1", "toolu_1", status=status))
+    )
+    assert types_of(events) == ["task_end"]
+    assert events[0]["status"] == status
+    assert tracker.outstanding()["background"] == 0
+
+
+def test_a_monitor_is_a_background_task(tracker):
+    """A monitor is background work, announced in wording of its own.
+
+    It gets an id from the same namespace as a shell command and ends through
+    the same notification, so the only thing separating the two is what the
+    launching tool_result says.
+    """
+    running_user_turn(tracker)
+    tracker.on_entry(assistant_tool_use("toolu_1", "watch CI", background=False))
+    events = tracker.on_entry(
+        tool_result(
+            "toolu_1",
+            "Monitor started (task bwmkvgwju, timeout 3000000ms). You will be "
+            "notified on each event.",
+        )
+    )
+    assert types_of(events) == ["task_start", "tool_result"]
+    assert events[0]["task"] == {"id": "bwmkvgwju", "kind": "monitor"}
+    assert tracker.outstanding()["background"] == 1
+
+
+def test_a_monitor_event_is_not_the_monitor_ending(tracker):
+    """Events fire throughout a monitor's life; only a status ends it."""
+    running_user_turn(tracker)
+    tracker.on_entry(assistant_tool_use("toolu_1", "watch CI", background=False))
+    tracker.on_entry(tool_result("toolu_1", "Monitor started (task bmon, timeout 60000ms)."))
+
+    events = tracker.on_entry(user_text(monitor_event("bmon", "toolu_1")))
+    assert types_of(events) == []
+    assert tracker.outstanding()["background"] == 1
+
+    events = tracker.on_entry(user_text(notification("bmon", "toolu_1", status="stopped")))
+    assert types_of(events) == ["task_end"]
+    assert tracker.outstanding()["background"] == 0
+
+
+def test_an_async_subagent_is_a_background_task(tracker):
+    """A subagent launched to run on its own is outstanding work too."""
+    running_user_turn(tracker)
+    tracker.on_entry(assistant_tool_use("toolu_1", "survey the corpus", background=False))
+    events = tracker.on_entry(
+        tool_result(
+            "toolu_1",
+            "Async agent launched successfully. (This tool result is internal "
+            "metadata.)\nagentId: a7195bc33b72b2374 (internal ID)",
+        )
+    )
+    assert types_of(events) == ["task_start", "tool_result"]
+    assert events[0]["task"] == {"id": "a7195bc33b72b2374", "kind": "agent"}
+    assert tracker.outstanding()["background"] == 1
+
+
+def test_an_event_for_an_unseen_monitor_still_announces_it(tracker):
+    """So that a `caused_by` never names a task the client was not told about.
+
+    A launch wording the tracker does not know leaves the task unregistered.
+    The first notification of any kind — event or terminal — is the backstop.
+    """
+    running_user_turn(tracker)
+    events = tracker.on_entry(user_text(monitor_event("bunseen", "toolu_9")))
+    assert types_of(events) == ["task_start"]
+    assert events[0]["task"] == {"id": "bunseen", "kind": "unknown"}
     assert tracker.outstanding()["background"] == 1
 
 

@@ -35,6 +35,7 @@ from agentproxy.protocol import Emitter
 from agentproxy.turn_tracker import TurnTracker
 
 from tests.harness import (
+    monitor_event,
     Session,
     assistant_text,
     assistant_thinking,
@@ -463,6 +464,56 @@ def test_requirement_7_a_completion_that_wakes_nothing_is_still_reported(session
     assert [m["turn"]["id"] for m in session.of_type("turn_start")] == [turn_id]
     finish_turn(session)
     invariants.every_turn_ends(session.messages())
+
+
+def test_requirement_7_a_task_that_is_killed_still_closes_its_count(session):
+    """The lifecycle is owed for every ending, not only the successful one.
+
+    A background task reports `completed`, `failed`, `killed` or `stopped`,
+    and 47 of the 309 in the surveyed corpus never report `completed`. Ending
+    only on the first left the count above zero for the life of the proxy,
+    which is precisely the stranded counter requirement 7 exists to prevent —
+    a client waiting for the work to finish waits forever.
+    """
+    turn_id = start_turn(session, "start the build")
+    launch_task(session, "toolu_1", "bg1")
+    session.writes(user_text(notification("bg1", "toolu_1", status="killed")))
+    session.run()
+
+    ends = session.of_type("task_end")
+    assert [m["task"]["id"] for m in ends] == ["bg1"]
+    assert ends[0]["status"] == "killed"
+    finish_turn(session)
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+
+
+def test_requirement_7_a_monitor_is_reported_for_its_whole_life(session):
+    """A monitor is outstanding work from launch until it is stopped.
+
+    Its events are not endings — a persistent monitor fires many and lives on
+    — so the count stays up between them, and a client asking "is anything
+    still running" is told the truth throughout.
+    """
+    start_turn(session, "watch the CI run")
+    session.writes(
+        assistant_tool_use("toolu_1", "watch CI"),
+        tool_result("toolu_1", "Monitor started (task bmon, timeout 600000ms)."),
+    )
+    session.run()
+    starts = session.of_type("task_start")
+    assert [m["task"]["kind"] for m in starts] == ["monitor"]
+    assert session.tracker.outstanding()["background"] == 1
+
+    session.writes(user_text(monitor_event("bmon", "toolu_1", "Unit tests: success")))
+    session.run()
+    assert session.of_type("task_end") == []
+    assert session.tracker.outstanding()["background"] == 1
+
+    session.writes(user_text(notification("bmon", "toolu_1", status="stopped")))
+    session.run()
+    assert session.of_type("task_end")[0]["status"] == "stopped"
+    finish_turn(session)
+    assert session.tracker.outstanding()["background"] == 0
 
 
 # ----------------------------------------------------------------------

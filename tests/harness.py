@@ -91,14 +91,28 @@ def background_launch(tool_use_id: str, task_id: str) -> dict:
     )
 
 
-def notification(task_id: str, tool_use_id: str, exit_code: int = 0) -> str:
+def notification(
+    task_id: str, tool_use_id: str, exit_code: int = 0, status: str = "completed"
+) -> str:
     return (
         "<task-notification>\n"
         f"<task-id>{task_id}</task-id>\n"
         f"<tool-use-id>{tool_use_id}</tool-use-id>\n"
-        "<status>completed</status>\n"
+        f"<status>{status}</status>\n"
         f'<summary>Background command "make" completed (exit code {exit_code})'
         "</summary>\n"
+        "</task-notification>"
+    )
+
+
+def monitor_event(task_id: str, tool_use_id: str, event: str = "line") -> str:
+    """A monitor firing an event: a notification with no `<status>` at all."""
+    return (
+        "<task-notification>\n"
+        f"<task-id>{task_id}</task-id>\n"
+        f"<tool-use-id>{tool_use_id}</tool-use-id>\n"
+        f'<summary>Monitor event: "watching"</summary>\n'
+        f"<event>{event}</event>\n"
         "</task-notification>"
     )
 

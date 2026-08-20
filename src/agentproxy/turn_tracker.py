@@ -41,6 +41,21 @@ STATE_ENDED = "ended"
 TASK_RUNNING = "running"
 TASK_DONE = "done"
 
+# What kind of work the task is. All three are counted the same way — they are
+# work outstanding that is not a turn — but a client showing them apart needs
+# to be told which, and only the launch wording says.
+TASK_SHELL = "shell"
+TASK_MONITOR = "monitor"
+TASK_AGENT = "agent"
+TASK_UNKNOWN = "unknown"
+
+# The statuses a `<task-notification>` uses to say the task is over. Every one
+# of them must end the task: absorbing only `completed` left the other three
+# stranding `outstanding.background` above zero for the life of the process,
+# which is 47 of 309 tasks in the surveyed corpus. A notification with no
+# status at all is a monitor firing an event, and ends nothing.
+TERMINAL_STATUSES = frozenset({"completed", "failed", "killed", "stopped"})
+
 OUTCOME_SUCCESS = "success"
 OUTCOME_ERROR = "error"
 
@@ -59,7 +74,19 @@ MARKER_BASIS = {
 # "Command running in background with ID: <id>", and a foreground command that
 # outlives its timeout produces "was moved to the background (ID: <id>)". The
 # second shape means a task can appear without anyone having asked for one.
-_BACKGROUND_LAUNCH_RE = re.compile(r"background[^.]*?ID: ([A-Za-z0-9_-]+)")
+# What the inner writes in a tool_result when it puts work in the background.
+# Keyed by wording because none of it is visible in the `tool_use`: the shell
+# flag is invisible on a timeout promotion, and neither the monitor nor the
+# subagent names its id anywhere else. Each entry yields the id the later
+# `<task-notification>` will be keyed by.
+_LAUNCH_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    (TASK_SHELL, re.compile(r"background[^.]*?ID: ([A-Za-z0-9_-]+)")),
+    (TASK_MONITOR, re.compile(r"Monitor started \(task ([A-Za-z0-9_-]+)")),
+    (
+        TASK_AGENT,
+        re.compile(r"Async agent launched successfully.{0,200}?agentId: ([A-Za-z0-9_-]+)", re.S),
+    ),
+)
 
 _NOTIFICATION_TAG_RE = re.compile(
     r"<(task-id|tool-use-id|status|summary)>(.*?)</\1>", re.DOTALL
@@ -87,7 +114,12 @@ class Turn:
 
 @dataclass
 class BackgroundTask:
-    """A `run_in_background` command, tracked apart from any turn.
+    """Work the inner put in the background, tracked apart from any turn.
+
+    Three things arrive here: a `run_in_background` shell command, a monitor,
+    and an async subagent. `kind` says which; the lifecycle is the same for
+    all three, because what the counter answers is "is anything still
+    outstanding", and all three are.
 
     Completing while a turn runs folds the notification into that turn and
     starts nothing; completing while idle starts an unowned turn. The count
@@ -96,9 +128,11 @@ class BackgroundTask:
     """
 
     id: str
+    kind: str = TASK_UNKNOWN
     tool_use_id: Optional[str] = None
     summary: Optional[str] = None
     state: str = TASK_RUNNING
+    status: Optional[str] = None
     exit_code: Optional[int] = None
 
 
@@ -178,8 +212,14 @@ class TurnTracker:
         for task in self._tasks.values():
             if task.state != TASK_DONE:
                 task.state = TASK_DONE
+                task.status = "failed"
                 events.append(
-                    {"type": "task_end", "task": {"id": task.id}, "exit_code": None}
+                    {
+                        "type": "task_end",
+                        "task": {"id": task.id, "kind": task.kind},
+                        "status": task.status,
+                        "exit_code": None,
+                    }
                 )
         self._typed_turn = None
         return events
@@ -280,7 +320,7 @@ class TurnTracker:
                 if t.state != STATE_ENDED
             ],
             "tasks": [
-                {"id": b.id, "summary": b.summary}
+                {"id": b.id, "kind": b.kind, "summary": b.summary}
                 for b in self._tasks.values()
                 if b.state != TASK_DONE
             ],
@@ -529,10 +569,20 @@ class TurnTracker:
     # ------------------------------------------------------------------
 
     def _note_background_launch(self, block: dict) -> list[dict]:
-        """Register a task from the tool_result that announced it, if any."""
+        """Register a task from the tool_result that announced it, if any.
+
+        Every kind of background work is recognised by its own wording, and a
+        wording the inner changes is a task that goes unseen until it reports
+        completion — so this is the surface to check first when
+        `outstanding.background` looks wrong. `_absorb_notification` is the
+        backstop that keeps the count correct even then.
+        """
         text = _flatten_text(block.get("content"))
-        match = _BACKGROUND_LAUNCH_RE.search(text)
-        if match is None:
+        for kind, pattern in _LAUNCH_RES:
+            match = pattern.search(text)
+            if match is not None:
+                break
+        else:
             return []
         task_id = match.group(1)
         if task_id in self._tasks:
@@ -540,46 +590,70 @@ class TurnTracker:
         tool_use_id = block.get("tool_use_id")
         task = BackgroundTask(
             id=task_id,
+            kind=kind,
             tool_use_id=tool_use_id,
             summary=self._tool_descriptions.get(tool_use_id),
         )
         self._tasks[task_id] = task
-        return [
-            {"type": "task_start", "task": {"id": task.id}, "summary": task.summary}
-        ]
+        return [self._task_start_event(task)]
+
+    def _task_start_event(self, task: BackgroundTask) -> dict:
+        """The `task_start` message announcing one task to the client."""
+        return {
+            "type": "task_start",
+            "task": {"id": task.id, "kind": task.kind},
+            "summary": task.summary,
+        }
 
     def _absorb_notification(self, text: Optional[str]) -> list[dict]:
-        """End the background task a completion notification names.
+        """Fold one `<task-notification>` into the task table.
 
-        Safe to call on any entry's text: entries carrying no notification,
-        and repeats of one already handled, both return no events.
+        Ends the task when the notification reports a terminal status, and
+        registers a task nobody saw launch either way. Safe to call on any
+        entry's text: entries carrying no notification, and repeats of one
+        already handled, both return no events.
+
+        A notification with no status is a monitor reporting an event, not
+        ending. It still registers the monitor if the launch went unseen, so
+        that a `caused_by` naming it resolves to a task the client was told
+        about.
         """
         note = _parse_notification(text)
-        if note is None or note["status"] != "completed":
+        if note is None:
             return []
         task_id = note["task_id"]
+        if task_id is None:
+            return []
         task = self._tasks.get(task_id)
         events: list[dict] = []
         if task is None:
             # The launch went unseen — the transcript was joined mid-session,
-            # or the announcing tool_result was worded in some third way.
-            # Register it now so the completion still has a matching start.
+            # or the announcing tool_result was worded in some way this does
+            # not know. Register it now so the count and any `caused_by` still
+            # refer to a task the client has seen start.
             task = BackgroundTask(
                 id=task_id,
+                kind=TASK_UNKNOWN,
                 tool_use_id=note["tool_use_id"],
                 summary=note["summary"],
             )
             self._tasks[task_id] = task
-            log.log_text("tracker", f"background task {task_id} first seen at completion")
-            events.append(
-                {"type": "task_start", "task": {"id": task.id}, "summary": task.summary}
-            )
+            log.log_text("tracker", f"background task {task_id} first seen mid-life")
+            events.append(self._task_start_event(task))
+        if note["status"] not in TERMINAL_STATUSES:
+            return events
         if task.state == TASK_DONE:
             return events
         task.state = TASK_DONE
+        task.status = note["status"]
         task.exit_code = note["exit_code"]
         events.append(
-            {"type": "task_end", "task": {"id": task.id}, "exit_code": task.exit_code}
+            {
+                "type": "task_end",
+                "task": {"id": task.id, "kind": task.kind},
+                "status": task.status,
+                "exit_code": task.exit_code,
+            }
         )
         return events
 
