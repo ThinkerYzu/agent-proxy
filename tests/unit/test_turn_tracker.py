@@ -145,7 +145,7 @@ def test_submit_counts_before_anything_is_typed(tracker):
     assert types_of(events) == ["ack"]
     assert events[0]["turn"] == {"id": turn.id, "kind": KIND_USER}
     assert turn.state == STATE_QUEUED
-    assert tracker.outstanding() == {"user": 1, "unowned": 0, "background": 0}
+    assert tracker.outstanding() == {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_matching_entry_starts_the_user_turn(tracker):
@@ -170,7 +170,7 @@ def test_unmatched_entry_leaves_the_typed_prompt_outstanding(tracker):
     tracker.on_entry(user_text("not mine"))
     tracker.on_entry(assistant_text())
     assert turn.state == STATE_QUEUED
-    assert tracker.outstanding() == {"user": 1, "unowned": 1, "background": 0}
+    assert tracker.outstanding() == {"user": 1, "unowned": 1, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_a_prompt_the_tui_ate_a_trailing_backslash_from_still_binds(tracker):
@@ -184,7 +184,7 @@ def test_a_prompt_the_tui_ate_a_trailing_backslash_from_still_binds(tracker):
     tracker.mark_typed(turn)
     tracker.on_entry(user_text("do we have docs on glyph rendering?"))
     assert turn.state == STATE_RUNNING
-    assert tracker.outstanding() == {"user": 1, "unowned": 0, "background": 0}
+    assert tracker.outstanding() == {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_end_typed_turn_closes_a_prompt_the_transcript_never_showed(tracker):
@@ -200,7 +200,7 @@ def test_end_typed_turn_closes_a_prompt_the_transcript_never_showed(tracker):
     assert types_of(events) == ["turn_end"]
     assert events[0]["basis"] == "fallback:unmatched"
     assert turn.state == STATE_ENDED
-    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
     assert tracker.typed_turn is None
 
 
@@ -216,7 +216,7 @@ def test_queued_prompt_binds_after_the_unowned_turn_ends(tracker):
     tracker.on_entry(marker())
     tracker.on_entry(user_text("mine"))
     assert turn.state == STATE_RUNNING
-    assert tracker.outstanding() == {"user": 1, "unowned": 0, "background": 0}
+    assert tracker.outstanding() == {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 # ----------------------------------------------------------------------
@@ -274,7 +274,7 @@ def test_a_user_shaped_entry_arriving_mid_turn_starts_nothing(tracker):
     assert tracker.running_turn is turn
     assert len(tracker.turns) == 1
     tracker.on_entry(marker())
-    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_consecutive_unmatched_entries_fold_into_one_turn(tracker):
@@ -342,7 +342,7 @@ def test_launch_and_mid_turn_completion_leave_no_extra_turn(tracker):
     tracker.on_entry(queue_operation("remove", notification("bg1", "toolu_1")))
     tracker.on_entry(marker())
     assert len(tracker.turns) == 1
-    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_idle_completion_starts_an_unowned_turn_that_names_its_cause(tracker):
@@ -360,7 +360,7 @@ def test_idle_completion_starts_an_unowned_turn_that_names_its_cause(tracker):
     assert events[0]["caused_by"] == "bg1"
 
     tracker.on_entry(marker())
-    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_a_foreground_command_promoted_on_timeout_is_a_task_too(tracker):
@@ -415,7 +415,8 @@ def test_a_monitor_is_a_background_task(tracker):
     )
     assert types_of(events) == ["task_start", "tool_result"]
     assert events[0]["task"] == {"id": "bwmkvgwju", "kind": "monitor"}
-    assert tracker.outstanding()["background"] == 1
+    assert tracker.outstanding()["monitor"] == 1
+    assert tracker.outstanding()["background"] == 0
 
 
 def test_a_monitor_event_is_not_the_monitor_ending(tracker):
@@ -426,11 +427,11 @@ def test_a_monitor_event_is_not_the_monitor_ending(tracker):
 
     events = tracker.on_entry(user_text(monitor_event("bmon", "toolu_1")))
     assert types_of(events) == []
-    assert tracker.outstanding()["background"] == 1
+    assert tracker.outstanding()["monitor"] == 1
 
     events = tracker.on_entry(user_text(notification("bmon", "toolu_1", status="stopped")))
     assert types_of(events) == ["task_end"]
-    assert tracker.outstanding()["background"] == 0
+    assert tracker.outstanding()["monitor"] == 0
 
 
 def test_an_async_subagent_is_a_background_task(tracker):
@@ -446,7 +447,8 @@ def test_an_async_subagent_is_a_background_task(tracker):
     )
     assert types_of(events) == ["task_start", "tool_result"]
     assert events[0]["task"] == {"id": "a7195bc33b72b2374", "kind": "agent"}
-    assert tracker.outstanding()["background"] == 1
+    assert tracker.outstanding()["agent"] == 1
+    assert tracker.outstanding()["background"] == 0
 
 
 def test_an_event_for_an_unseen_monitor_still_announces_it(tracker):
@@ -500,7 +502,7 @@ def test_a_dead_inner_claude_closes_the_queue_behind_it(tracker):
     assert types_of(events) == ["error", "turn_end", "turn_end"]
     assert {event["turn"]["id"] for event in events[1:]} == {running.id, queued.id}
     assert all(event["outcome"] == "error" for event in events[1:])
-    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 # ----------------------------------------------------------------------

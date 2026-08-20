@@ -22,7 +22,7 @@ TURN_KINDS = {"user", "unowned"}
 
 
 def envelope(messages: list[dict]) -> None:
-    """`seq`, `type` and all three counts, on every line, numbered from 1.
+    """`seq`, `type` and every count, on every line, numbered from 1.
 
     Requirements 1 and 5. The counts are what a client gates its composer on,
     so a message that omitted them, or carried a negative one, would put the
@@ -32,7 +32,7 @@ def envelope(messages: list[dict]) -> None:
     for message in messages:
         assert isinstance(message.get("type"), str), message
         counts = message["outstanding"]
-        assert set(counts) == {"user", "unowned", "background"}, message
+        assert set(counts) == {"user", "unowned", "background", "monitor", "agent"}, message
         assert all(isinstance(value, int) and value >= 0 for value in counts.values())
 
 
@@ -121,7 +121,7 @@ def every_turn_ends(messages: list[dict]) -> None:
             tasks_ended.add(message["task"]["id"])
     assert opened - ended == set(), f"turns left hanging: {sorted(opened - ended)}"
     assert tasks_opened - tasks_ended == set(), sorted(tasks_opened - tasks_ended)
-    assert messages[-1]["outstanding"] == {"user": 0, "unowned": 0, "background": 0}
+    assert messages[-1]["outstanding"] == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def all_of_them(messages: list[dict]) -> None:

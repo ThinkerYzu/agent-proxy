@@ -284,7 +284,14 @@ class TurnTracker:
     # ------------------------------------------------------------------
 
     def outstanding(self) -> dict:
-        """The three counts, computed from the tables at the moment of the call.
+        """The counts, computed from the tables at the moment of the call.
+
+        The keys are disjoint and every kind of outstanding work has one, so a
+        client asking "is anything still running" can test them all without
+        knowing what they mean — including a key added after it was written.
+        Background work is split by `kind`; a task whose launch was never seen
+        counts under `background`, where an unrecognised shell command is the
+        likeliest thing it is.
 
         A candidate turn is absent from the table until the model is seen
         working on it, so an entry that never becomes a turn — the cluster
@@ -301,10 +308,18 @@ class TurnTracker:
                 for t in self._turns.values()
                 if t.kind == KIND_UNOWNED and t.state != STATE_ENDED
             ),
-            "background": sum(
-                1 for b in self._tasks.values() if b.state != TASK_DONE
-            ),
+            "background": self._count_tasks(TASK_SHELL, TASK_UNKNOWN),
+            "monitor": self._count_tasks(TASK_MONITOR),
+            "agent": self._count_tasks(TASK_AGENT),
         }
+
+    def _count_tasks(self, *kinds: str) -> int:
+        """How many unfinished tasks are of these kinds."""
+        return sum(
+            1
+            for b in self._tasks.values()
+            if b.state != TASK_DONE and b.kind in kinds
+        )
 
     def snapshot(self) -> dict:
         """Everything unfinished, for the `state` reply to a client `status`."""

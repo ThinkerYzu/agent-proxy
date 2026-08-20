@@ -18,7 +18,7 @@ def test_every_message_carries_seq_and_all_three_counts():
     message = emitter.emit(events[0])
     assert list(message) == ["seq", "type", "turn", "outstanding"]
     assert message["seq"] == 1
-    assert message["outstanding"] == {"user": 1, "unowned": 0, "background": 0}
+    assert message["outstanding"] == {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
     written = json.loads(out.getvalue().splitlines()[0])
     assert written == message

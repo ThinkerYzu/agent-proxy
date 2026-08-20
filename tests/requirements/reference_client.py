@@ -8,7 +8,7 @@ from a real front-end, and a client that needs none of them is what makes
 deleting them possible.
 
 What makes it a test instrument rather than a sample is that it derives the
-three counts a second time, from the events alone, and every test that drives
+the counts a second time, from the events alone, and every test that drives
 it compares that derivation against the counts the proxy stamped on the same
 messages. The id path and the counter path are independent routes to the same
 answer, so a disagreement between them is a desync caught at the message that
@@ -22,10 +22,12 @@ the counts legitimately run ahead of the events a client has read — see
 
 from __future__ import annotations
 
+import collections
+
 from typing import Optional
 
 
-EMPTY = {"user": 0, "unowned": 0, "background": 0}
+EMPTY = {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 class ReferenceClient:
@@ -37,7 +39,7 @@ class ReferenceClient:
         self.rejected: set = set()
         self.open_user: set[str] = set()
         self.open_unowned: set[str] = set()
-        self.open_tasks: set[str] = set()
+        self.open_tasks: dict[str, str] = {}   # task id -> kind
         self.ended: dict[str, dict] = {}
         self.started: set[str] = set()
         # Only a `state` reply says which turns are queued and which are
@@ -79,9 +81,9 @@ class ReferenceClient:
             self.open_unowned.discard(turn["id"])
             self.ended[turn["id"]] = message
         elif kind == "task_start":
-            self.open_tasks.add(message["task"]["id"])
+            self.open_tasks[message["task"]["id"]] = message["task"]["kind"]
         elif kind == "task_end":
-            self.open_tasks.discard(message["task"]["id"])
+            self.open_tasks.pop(message["task"]["id"], None)
         elif kind == "state":
             self.adopt(message)
         elif kind == "error":
@@ -106,7 +108,7 @@ class ReferenceClient:
         """
         self.open_user = {t["id"] for t in state["turns"] if t["kind"] == "user"}
         self.open_unowned = {t["id"] for t in state["turns"] if t["kind"] == "unowned"}
-        self.open_tasks = {task["id"] for task in state["tasks"]}
+        self.open_tasks = {task["id"]: task["kind"] for task in state["tasks"]}
         self.queued = {t["id"] for t in state["turns"] if t["state"] == "queued"}
         self.running = {t["id"] for t in state["turns"] if t["state"] == "running"}
 
@@ -125,11 +127,23 @@ class ReferenceClient:
 
     @property
     def derived(self) -> dict:
-        """The three counts worked out from the events, never from the counts."""
+        """The counts worked out from the events, never from the counts.
+
+        Background work is split the way the proxy splits it — by `kind`, into
+        disjoint buckets — so this can be compared with `outstanding` key for
+        key. A kind this client has never heard of counts under `background`,
+        which is what keeps the comparison honest when the proxy learns a new
+        one before the client does.
+        """
+        kinds = collections.Counter(self.open_tasks.values())
         return {
             "user": len(self.open_user),
             "unowned": len(self.open_unowned),
-            "background": len(self.open_tasks),
+            "background": len(self.open_tasks)
+            - kinds["monitor"]
+            - kinds["agent"],
+            "monitor": kinds["monitor"],
+            "agent": kinds["agent"],
         }
 
     def turn_for(self, ref: object) -> Optional[str]:

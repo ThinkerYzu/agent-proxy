@@ -44,7 +44,7 @@ def messages():
 
 
 def test_every_counter_drains_to_zero(replayed):
-    assert replayed.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert replayed.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_turn_count_and_kinds_match_the_session(replayed):
@@ -108,8 +108,8 @@ def test_no_turn_ends_twice_and_ids_are_unique(replayed):
 def test_the_emitted_stream_is_well_formed(messages):
     """Every line is one message, numbered from 1, with the counts on it."""
     assert [m["seq"] for m in messages] == list(range(1, len(messages) + 1))
-    assert all(set(m["outstanding"]) == {"user", "unowned", "background"} for m in messages)
-    assert messages[-1]["outstanding"] == {"user": 0, "unowned": 0, "background": 0}
+    assert all(set(m["outstanding"]) == {"user", "unowned", "background", "monitor", "agent"} for m in messages)
+    assert messages[-1]["outstanding"] == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_each_user_turn_is_acknowledged_before_it_starts(replayed, messages):

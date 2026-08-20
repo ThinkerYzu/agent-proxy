@@ -162,7 +162,7 @@ def test_criterion_3_a_long_mixed_session_never_desyncs(session):
     bases = Counter(m["basis"] for m in ends)
     assert bases["marker:turn_duration"] > 0 and bases["fallback:idle"] > 0
 
-    assert client.derived == {"user": 0, "unowned": 0, "background": 0}
+    assert client.derived == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
     assert all(client.is_finished(ref) for ref in mine)
     assert client.expected_seq == len(messages) + 1
 
@@ -289,7 +289,7 @@ def test_criterion_6_a_reconnecting_client_rebuilds_from_the_state_reply(session
     client.consume(state)
     assert state["ref"] == "resync-1"
     assert client.derived == session.tracker.outstanding()
-    assert client.derived == {"user": 1, "unowned": 1, "background": 0}
+    assert client.derived == {"user": 1, "unowned": 1, "background": 0, "monitor": 0, "agent": 0}
     assert client.queued == {client.turn_for("c-2")}
     assert client.running != client.queued
 
@@ -306,7 +306,7 @@ def test_criterion_6_a_reconnecting_client_rebuilds_from_the_state_reply(session
 
     assert client.is_finished("c-2")
     assert not client.is_finished("c-1")  # its end went past while it was away
-    assert client.derived == client.counts == {"user": 0, "unowned": 0, "background": 0}
+    assert client.derived == client.counts == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_criterion_6_a_client_with_no_history_at_all_is_correct_too(session):
@@ -325,7 +325,7 @@ def test_criterion_6_a_client_with_no_history_at_all_is_correct_too(session):
     newcomer = ReferenceClient()
     newcomer.adopt(state)
     assert newcomer.derived == session.tracker.outstanding()
-    assert newcomer.derived == {"user": 1, "unowned": 1, "background": 0}
+    assert newcomer.derived == {"user": 1, "unowned": 1, "background": 0, "monitor": 0, "agent": 0}
     assert len(newcomer.running) == 1 and len(newcomer.queued) == 1
     assert newcomer.open_unowned == newcomer.running
     assert newcomer.turn_of == {}

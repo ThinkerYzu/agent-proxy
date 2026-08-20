@@ -90,7 +90,7 @@ Every line on stdout is one complete JSON object with the same envelope:
 |---|---|---|
 | `seq` | always | counts from 1, no gaps; a jump means the client dropped a line |
 | `type` | always | one of the message types below |
-| `outstanding` | always | the three counts at the moment of emission |
+| `outstanding` | always | every count at the moment of emission |
 | `turn` | messages belonging to a turn | `id` correlates, `kind` is `user` or `unowned` |
 | `ref` | messages answering a command that carried one | the client's own token, echoed verbatim |
 
@@ -108,14 +108,22 @@ only early, and the next message restates them.
 |---|---|---|
 | `user` | prompts this client submitted, queued and running | that turn's `turn_end` |
 | `unowned` | turns the inner `claude` started on its own | that turn's `turn_end` |
-| `background` | background work still running — see below | that task's `task_end` |
+| `background` | background shell commands still running | that task's `task_end` |
+| `monitor` | monitors still watching | that task's `task_end` |
+| `agent` | subagents still working | that task's `task_end` |
+
+**The counts are disjoint, and no work is outside them.** Nothing is counted
+twice and nothing is missing, so `any(outstanding.values())` is the whole
+answer to "is anything still running" — including for a count added after your
+client was written. Do not hard-code the key list: read the values. A task
+whose launch was never recognised counts under `background`, which is the
+likeliest thing an unrecognised launch is.
 
 A background task is not a turn. One that finishes while the agent is idle
 starts an unowned turn; one that finishes mid-turn is folded into the running
 turn and starts nothing. That is why the count is separate.
 
-Three kinds of work are counted here, named by `task.kind` on both task
-messages:
+The three background counts correspond to `task.kind` on both task messages:
 
 | `kind` | What it is |
 |---|---|
@@ -124,12 +132,12 @@ messages:
 | `agent` | a subagent launched to run on its own |
 | `unknown` | the launch was never seen; the task was registered from a notification |
 
-They are counted alike because the count answers one question — is anything
-still outstanding — and all three are. They differ in how long they live: a
-shell command ends when it exits, while a persistent monitor holds the count
-above zero until something stops it, which is the truth about it rather than a
-fault. A client that wants to show them apart reads `kind`; a client that only
-wants to know whether work remains can keep ignoring it.
+They are counted separately because they mean different things to a person
+looking at a UI, and because they live for different lengths of time: a shell
+command ends when it exits, while a persistent monitor holds `monitor` above
+zero until something stops it, which is the truth about it rather than a fault.
+`kind` on the task messages says the same thing per task that the counts say in
+aggregate — use whichever suits.
 
 ## Commands
 

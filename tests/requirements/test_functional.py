@@ -101,8 +101,41 @@ def complete_task_while_idle(session: Session, task_id: str, tool_use_id: str) -
 
 
 # ----------------------------------------------------------------------
-# Requirement 1 — the proxy maintains three counts at all times
+# Requirement 1 — the proxy maintains its counts at all times
 # ----------------------------------------------------------------------
+
+
+def test_requirement_1_the_counts_are_disjoint_and_leave_nothing_out(session):
+    """Every piece of outstanding work is in exactly one count.
+
+    This is what lets a client ask "is anything still running" by testing the
+    values rather than a list of keys it hard-coded — and therefore what let
+    `monitor` and `agent` be added without breaking a client written before
+    them. Two things are checked together: nothing is counted twice (the sum
+    matches the tables), and nothing is missing (the sum matches the total).
+    """
+    start_turn(session, "start everything at once")
+    launch_task(session, "toolu_1", "bg1")
+    session.writes(
+        assistant_tool_use("toolu_2", "watch CI"),
+        tool_result("toolu_2", "Monitor started (task bmon, timeout 600000ms)."),
+        assistant_tool_use("toolu_3", "survey the corpus"),
+        tool_result(
+            "toolu_3",
+            "Async agent launched successfully.\nagentId: a719 (internal ID)",
+        ),
+    )
+    session.run()
+
+    counts = session.tracker.outstanding()
+    assert counts == {"user": 1, "unowned": 0, "background": 1, "monitor": 1, "agent": 1}
+    unfinished_tasks = [t for t in session.tracker.tasks if t.state != "done"]
+    assert counts["background"] + counts["monitor"] + counts["agent"] == len(
+        unfinished_tasks
+    ), "a task is in two counts, or in none"
+
+    finish_turn(session)
+    assert any(session.tracker.outstanding().values()), "the monitor is still watching"
 
 
 def test_requirement_1_the_three_counts_are_tracked_apart(session):
@@ -118,7 +151,7 @@ def test_requirement_1_the_three_counts_are_tracked_apart(session):
     launch_task(session, "toolu_1", "bg1")
     launch_task(session, "toolu_2", "bg2")
     finish_turn(session)
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 2}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 2, "monitor": 0, "agent": 0}
 
     # bg1 finishing while the inner is idle wakes a turn nobody asked for; two
     # prompts submitted into it are acknowledged and wait at the keyboard.
@@ -133,7 +166,7 @@ def test_requirement_1_the_three_counts_are_tracked_apart(session):
     session.submit("A")
     session.submit("B")
     session.run()
-    assert session.tracker.outstanding() == {"user": 2, "unowned": 1, "background": 1}
+    assert session.tracker.outstanding() == {"user": 2, "unowned": 1, "background": 1, "monitor": 0, "agent": 0}
     assert session.typed == ["start two builds"]
 
     session.writes(marker())
@@ -155,7 +188,7 @@ def test_requirement_1_the_three_counts_are_tracked_apart(session):
     )
     session.footer_idle = True
     session.run()
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
     invariants.all_of_them(session.messages())
 
 
@@ -329,7 +362,7 @@ def test_requirement_4_a_client_never_has_to_judge_whether_an_end_was_real(sessi
 
 
 # ----------------------------------------------------------------------
-# Requirement 5 — every message carries all three counts
+# Requirement 5 — every message carries every count
 # ----------------------------------------------------------------------
 
 
@@ -373,7 +406,7 @@ def test_requirement_5_a_batch_carries_the_counts_it_ends_with():
 
     failure = emitter.emit_all(tracker.fail_session("inner claude exited"))
     assert [m["type"] for m in failure] == ["error", "turn_end", "turn_end"]
-    assert all(m["outstanding"] == {"user": 0, "unowned": 0, "background": 0} for m in failure)
+    assert all(m["outstanding"] == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0} for m in failure)
 
 
 # ----------------------------------------------------------------------
@@ -422,7 +455,7 @@ def test_requirement_6_a_wait_resolves_on_the_id_the_ack_issued(session):
     assert len(ends) == 3
     assert ends[-1] == client.turn_for("c-B")
     assert client.is_finished("c-A") and client.is_finished("c-B")
-    assert client.derived == {"user": 0, "unowned": 0, "background": 0}
+    assert client.derived == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 # ----------------------------------------------------------------------
@@ -484,7 +517,7 @@ def test_requirement_7_a_task_that_is_killed_still_closes_its_count(session):
     assert [m["task"]["id"] for m in ends] == ["bg1"]
     assert ends[0]["status"] == "killed"
     finish_turn(session)
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_requirement_7_a_monitor_is_reported_for_its_whole_life(session):
@@ -502,18 +535,19 @@ def test_requirement_7_a_monitor_is_reported_for_its_whole_life(session):
     session.run()
     starts = session.of_type("task_start")
     assert [m["task"]["kind"] for m in starts] == ["monitor"]
-    assert session.tracker.outstanding()["background"] == 1
+    assert session.tracker.outstanding()["monitor"] == 1
+    assert session.tracker.outstanding()["background"] == 0
 
     session.writes(user_text(monitor_event("bmon", "toolu_1", "Unit tests: success")))
     session.run()
     assert session.of_type("task_end") == []
-    assert session.tracker.outstanding()["background"] == 1
+    assert session.tracker.outstanding()["monitor"] == 1
 
     session.writes(user_text(notification("bmon", "toolu_1", status="stopped")))
     session.run()
     assert session.of_type("task_end")[0]["status"] == "stopped"
     finish_turn(session)
-    assert session.tracker.outstanding()["background"] == 0
+    assert session.tracker.outstanding()["monitor"] == 0
 
 
 # ----------------------------------------------------------------------
@@ -533,7 +567,7 @@ def test_requirement_8_the_reply_stands_on_its_own(session):
     newcomer = ReferenceClient()
     newcomer.adopt(state)
     assert newcomer.derived == state["outstanding"] == session.tracker.outstanding()
-    assert newcomer.derived == {"user": 2, "unowned": 0, "background": 1}
+    assert newcomer.derived == {"user": 2, "unowned": 0, "background": 1, "monitor": 0, "agent": 0}
     assert state["ref"] == "q-1"
 
 
@@ -650,7 +684,7 @@ def test_requirement_10_nothing_survives_a_failure_to_be_bound_later(session):
     session.footer_idle = True
     session.run()
     assert session.tracker.typed_turn is None
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
     assert len(session.of_type("turn_end")) == 2
 
 
@@ -696,7 +730,7 @@ def test_requirement_11_the_ceiling_ends_a_turn_nothing_else_would(session):
     ends = session.of_type("turn_end")
     assert [m["turn"]["id"] for m in ends] == [turn_id]
     assert ends[0]["basis"] == "fallback:stalled"
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_requirement_11_a_prompt_the_transcript_never_shows_still_ends(session):
@@ -726,7 +760,7 @@ def test_requirement_11_a_prompt_the_transcript_never_shows_still_ends(session):
     ends = [m for m in session.of_type("turn_end") if m["turn"]["id"] == turn_id]
     assert ends, "the typed prompt was never ended"
     assert ends[0]["basis"] == "fallback:unmatched"
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
     assert session.proxy.is_ready_to_send(), "the keyboard is still held"
 
 
@@ -768,7 +802,7 @@ def test_requirement_11_a_marker_arriving_after_the_fallback_opens_no_phantom(se
     session.writes(marker())
     session.run()
     assert [m["turn"]["id"] for m in session.of_type("turn_end")] == [turn_id]
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
     invariants.all_of_them(session.messages())
 
 

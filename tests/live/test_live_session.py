@@ -174,7 +174,7 @@ def test_a_queued_prompt_a_background_task_and_an_unowned_turn_all_drain(session
     # The stream is well formed all the way through.
     assert [m["seq"] for m in messages] == list(range(1, len(messages) + 1))
     assert all(
-        set(m["outstanding"]) == {"user", "unowned", "background"} for m in messages
+        set(m["outstanding"]) == {"user", "unowned", "background", "monitor", "agent"} for m in messages
     )
 
     session.stdin.close()

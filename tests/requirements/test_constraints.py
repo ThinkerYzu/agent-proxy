@@ -148,7 +148,7 @@ def test_r3_the_same_text_is_a_user_turn_or_an_unowned_one_by_who_typed_it(sessi
 
     starts = session.of_type("turn_start")
     assert [m["turn"]["kind"] for m in starts] == ["user", "unowned"]
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_r3_a_prompt_shaped_entry_that_is_not_a_prompt_opens_nothing(session):
@@ -175,7 +175,7 @@ def test_r3_a_prompt_shaped_entry_that_is_not_a_prompt_opens_nothing(session):
     )
     session.run()
     assert len(session.of_type("turn_start")) == 1
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 # ----------------------------------------------------------------------
@@ -236,7 +236,7 @@ def test_nfr_3_a_repeated_signal_decrements_once(session):
     session.writes(marker())
     session.footer_idle = True
     session.run()
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_nfr_3_every_counter_can_reach_zero_from_a_session_at_its_busiest(session):
@@ -259,12 +259,14 @@ def test_nfr_3_every_counter_can_reach_zero_from_a_session_at_its_busiest(sessio
     session.run()
     session.submit("and then this")
     session.submit("and this")
-    assert session.tracker.outstanding() == {"user": 3, "unowned": 0, "background": 2}
+    assert session.tracker.outstanding() == {"user": 3, "unowned": 0, "background": 2, "monitor": 0, "agent": 0}
 
     session.proxy.fail("inner claude exited")
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
     assert session.messages()[-1]["outstanding"] == {
         "user": 0,
         "unowned": 0,
         "background": 0,
+        "monitor": 0,
+        "agent": 0,
     }

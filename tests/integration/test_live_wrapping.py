@@ -42,7 +42,7 @@ def test_the_session_announces_itself_before_anything_else(session):
     first = session.messages()[0]
     assert first["type"] == "ready"
     assert first["session_id"] == "session-under-test"
-    assert first["outstanding"] == {"user": 0, "unowned": 0, "background": 0}
+    assert first["outstanding"] == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 def test_a_prompt_is_acknowledged_before_a_key_is_typed(session):
@@ -112,7 +112,7 @@ def test_every_message_carries_all_three_counts(session):
     session.answers("hello")
     session.run()
     assert all(
-        set(m["outstanding"]) == {"user", "unowned", "background"}
+        set(m["outstanding"]) == {"user", "unowned", "background", "monitor", "agent"}
         for m in session.messages()
     )
     assert [m["seq"] for m in session.messages()] == list(
@@ -217,7 +217,7 @@ def test_a_turn_no_marker_closes_still_ends(session):
     ends = session.of_type("turn_end")
     assert [e["turn"]["id"] for e in ends] == [turn_id]
     assert ends[0]["basis"] == "fallback:idle"
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 # ----------------------------------------------------------------------
@@ -246,14 +246,14 @@ def test_a_queued_prompt_a_background_task_and_an_unowned_turn_all_drain(session
     session.writes(marker())
     session.footer_idle = True
     session.run()
-    assert session.tracker.outstanding() == {"user": 1, "unowned": 0, "background": 1}
+    assert session.tracker.outstanding() == {"user": 1, "unowned": 0, "background": 1, "monitor": 0, "agent": 0}
     assert session.typed == ["start the build", "meanwhile, explain the plan"]
 
     session.footer_idle = False
     session.answers("meanwhile, explain the plan")
     session.footer_idle = True
     session.run()
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 1}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 1, "monitor": 0, "agent": 0}
 
     # The task finishes while the inner is idle, so it wakes a turn nobody
     # asked for.
@@ -280,6 +280,8 @@ def test_a_queued_prompt_a_background_task_and_an_unowned_turn_all_drain(session
         "user": 0,
         "unowned": 0,
         "background": 0,
+        "monitor": 0,
+        "agent": 0,
     }
 
 
@@ -304,7 +306,7 @@ def test_a_task_finishing_mid_turn_makes_no_turn_and_still_decrements(session):
     session.run()
     assert len(session.of_type("turn_start")) == 1
     assert session.of_type("task_end")[-1]["exit_code"] == 0
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 # ----------------------------------------------------------------------
@@ -356,7 +358,7 @@ def test_each_client_wait_resolves_on_its_own_turn_id(session):
     assert [e["turn"]["kind"] for e in ends] == ["user", "unowned", "user"]
     # A client waiting on B sees three, and only one of them is its own.
     assert sum(1 for e in ends if e["turn"]["id"] == second) == 1
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
 
 
 # ----------------------------------------------------------------------
@@ -382,7 +384,7 @@ def test_a_dead_inner_claude_closes_the_running_turn_and_the_queue_behind_it(ses
     assert set(ends) == {running, queued}
     assert all(e["outcome"] == "error" for e in ends.values())
     assert session.of_type("task_end")[-1]["exit_code"] is None
-    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0}
+    assert session.tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
     assert not session.proxy.has_unfinished_work
 
 
