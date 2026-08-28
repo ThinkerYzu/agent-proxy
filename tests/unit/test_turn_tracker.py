@@ -98,6 +98,19 @@ def monitor_event(task_id: str, tool_use_id: str, event: str = "line") -> str:
     )
 
 
+def task_stop_result(tool_use_id: str, task_id: str, command: str = "true") -> dict:
+    """`TaskStop`'s own tool_result confirming it stopped `task_id`.
+
+    Structured JSON in real sessions, but recognised by the same `"Successfully
+    stopped task: <id>"` wording either way — see `_STOP_RE`.
+    """
+    content = (
+        f'{{"message":"Successfully stopped task: {task_id} ({command})",'
+        f'"task_id":"{task_id}","task_type":"local_bash","command":"{command}"}}'
+    )
+    return tool_result(tool_use_id, content)
+
+
 def queue_operation(operation: str, content: str | None = None) -> dict:
     entry = {"type": "queue-operation", "operation": operation}
     if content is not None:
@@ -395,6 +408,59 @@ def test_a_task_that_does_not_complete_still_ends(tracker, status):
     assert types_of(events) == ["task_end"]
     assert events[0]["status"] == status
     assert tracker.outstanding()["background"] == 0
+
+
+def test_task_stop_ends_the_task_with_no_notification(tracker):
+    """`TaskStop` resolves in-band; the count must fall without a notification.
+
+    The model can stop its own background task and gets the confirmation back
+    synchronously, in `TaskStop`'s own tool_result — no `<task-notification>`
+    ever follows a stop. Unrecognised, this is a fifth way for
+    `outstanding.background` to strand above zero for the life of the
+    process, the same failure class Session 13 fixed for the four
+    notification statuses.
+    """
+    running_user_turn(tracker)
+    launch_background(tracker, "bg1", "toolu_1")
+    assert tracker.outstanding()["background"] == 1
+
+    events = tracker.on_entry(task_stop_result("toolu_2", "bg1"))
+    assert types_of(events) == ["task_end", "tool_result"]
+    assert events[0]["task"] == {"id": "bg1", "kind": "shell"}
+    assert events[0]["status"] == "stopped"
+    assert tracker.outstanding()["background"] == 0
+
+
+def test_a_failed_task_stop_ends_nothing(tracker):
+    running_user_turn(tracker)
+    launch_background(tracker, "bg1", "toolu_1")
+    events = tracker.on_entry(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_2",
+                        "content": "Task bg1 not found",
+                        "is_error": True,
+                    }
+                ]
+            },
+        }
+    )
+    assert types_of(events) == ["tool_result"]
+    assert tracker.outstanding()["background"] == 1
+
+
+def test_task_stop_for_an_already_ended_task_is_a_no_op(tracker):
+    running_user_turn(tracker)
+    launch_background(tracker, "bg1", "toolu_1")
+    tracker.on_entry(user_text(notification("bg1", "toolu_1")))
+    assert tracker.outstanding()["background"] == 0
+
+    events = tracker.on_entry(task_stop_result("toolu_2", "bg1"))
+    assert types_of(events) == ["tool_result"]
 
 
 def test_a_monitor_is_a_background_task(tracker):

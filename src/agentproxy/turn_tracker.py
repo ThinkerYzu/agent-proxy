@@ -93,6 +93,12 @@ _NOTIFICATION_TAG_RE = re.compile(
 )
 _EXIT_CODE_RE = re.compile(r"exit code (-?\d+)")
 
+# `TaskStop`'s own tool_result, confirming a task the model stopped on
+# purpose. This ending never produces a `<task-notification>` — the stop is
+# confirmed in-band, synchronously — so it needs its own recognition, by
+# wording, for the same reason a launch does: the tool name is invisible here.
+_STOP_RE = re.compile(r"[Ss]uccessfully stopped task:?\s+([A-Za-z0-9_-]+)")
+
 
 @dataclass
 class Turn:
@@ -212,16 +218,7 @@ class TurnTracker:
                 events += self._end_turn(turn, BASIS_ERROR, OUTCOME_ERROR)
         for task in self._tasks.values():
             if task.state != TASK_DONE:
-                task.state = TASK_DONE
-                task.status = "failed"
-                events.append(
-                    {
-                        "type": "task_end",
-                        "task": {"id": task.id, "kind": task.kind},
-                        "status": task.status,
-                        "exit_code": None,
-                    }
-                )
+                events.append(self._end_task(task, "failed"))
         self._typed_turn = None
         return events
 
@@ -396,6 +393,7 @@ class TurnTracker:
             if not isinstance(block, dict) or block.get("type") != "tool_result":
                 continue
             events += self._note_background_launch(block)
+            events += self._note_task_stop(block)
             events.append(
                 {
                     "type": "tool_result",
@@ -621,6 +619,46 @@ class TurnTracker:
             "summary": task.summary,
         }
 
+    def _end_task(
+        self, task: BackgroundTask, status: str, exit_code: Optional[int] = None
+    ) -> dict:
+        """Mark `task` done and return the `task_end` announcing it.
+
+        The one place that closes a task, so every ending — a terminal
+        `<task-notification>`, a session failure, a `TaskStop` confirmation —
+        produces the same shape on the wire.
+        """
+        task.state = TASK_DONE
+        task.status = status
+        task.exit_code = exit_code
+        return {
+            "type": "task_end",
+            "task": {"id": task.id, "kind": task.kind},
+            "status": task.status,
+            "exit_code": task.exit_code,
+        }
+
+    def _note_task_stop(self, block: dict) -> list[dict]:
+        """End a task the model stopped on purpose, confirmed by `TaskStop`'s own tool_result.
+
+        `TaskStop` resolves in-band: its tool_result *is* the confirmation,
+        and no `<task-notification>` follows it. Left to `_absorb_notification`
+        alone, a stopped task's count never falls, stranding
+        `outstanding.background` (or `.monitor` / `.agent`) above zero for the
+        life of the process — the same failure Session 13 found for the four
+        notification statuses, but from a fifth ending path that emits no
+        notification at all.
+        """
+        if block.get("is_error"):
+            return []
+        match = _STOP_RE.search(_flatten_text(block.get("content")))
+        if match is None:
+            return []
+        task = self._tasks.get(match.group(1))
+        if task is None or task.state == TASK_DONE:
+            return []
+        return [self._end_task(task, "stopped")]
+
     def _absorb_notification(self, text: Optional[str]) -> list[dict]:
         """Fold one `<task-notification>` into the task table.
 
@@ -660,17 +698,7 @@ class TurnTracker:
             return events
         if task.state == TASK_DONE:
             return events
-        task.state = TASK_DONE
-        task.status = note["status"]
-        task.exit_code = note["exit_code"]
-        events.append(
-            {
-                "type": "task_end",
-                "task": {"id": task.id, "kind": task.kind},
-                "status": task.status,
-                "exit_code": task.exit_code,
-            }
-        )
+        events.append(self._end_task(task, note["status"], note["exit_code"]))
         return events
 
 
