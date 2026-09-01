@@ -149,7 +149,9 @@ def test_a_queued_prompt_a_background_task_and_an_unowned_turn_all_drain(session
     assert kinds.index("ack") < kinds.index("turn_start")
 
     # The background task outlives the turn that launched it.
-    launched = [m for m in messages if m["type"] == "task_start"][0]["task"]["id"]
+    start = [m for m in messages if m["type"] == "task_start"][0]
+    launched = start["task"]["id"]
+    assert "sleep 12" in start["command"]
     ends = [m for m in messages if m["type"] == "turn_end"]
     assert ends[0]["outstanding"]["background"] == 1
 
@@ -157,6 +159,7 @@ def test_a_queued_prompt_a_background_task_and_an_unowned_turn_all_drain(session
     # task that woke it.
     finished = [m for m in messages if m["type"] == "task_end"]
     assert [m["task"]["id"] for m in finished] == [launched]
+    assert "finished" in finished[0]["output"]
     unowned = [
         m
         for m in messages

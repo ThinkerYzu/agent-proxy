@@ -92,12 +92,18 @@ def background_launch(tool_use_id: str, task_id: str) -> dict:
 
 
 def notification(
-    task_id: str, tool_use_id: str, exit_code: int = 0, status: str = "completed"
+    task_id: str,
+    tool_use_id: str,
+    exit_code: int = 0,
+    status: str = "completed",
+    output_file: str | None = None,
 ) -> str:
+    output_tag = f"<output-file>{output_file}</output-file>\n" if output_file else ""
     return (
         "<task-notification>\n"
         f"<task-id>{task_id}</task-id>\n"
         f"<tool-use-id>{tool_use_id}</tool-use-id>\n"
+        f"{output_tag}"
         f"<status>{status}</status>\n"
         f'<summary>Background command "make" completed (exit code {exit_code})'
         "</summary>\n"
@@ -163,6 +169,9 @@ class Session:
         self._read = 0
         self.typed: list[str] = []
         self.footer_idle = True
+        # A background task's output file, in memory: tests set
+        # `session.task_outputs[path] = "..."` before the task_end that reads it.
+        self.task_outputs: dict[str, str] = {}
         self.proxy = Proxy(
             tracker=self.tracker,
             emitter=Emitter(self.tracker, out=self.out),
@@ -170,6 +179,7 @@ class Session:
             liveness=Liveness(clock=self.clock),
             fallback=FallbackEot(clock=self.clock),
             read_entries=self._read_entries,
+            read_output=self.task_outputs.get,
             activity=self.activity,
         )
         self.proxy.announce_ready("session-under-test")

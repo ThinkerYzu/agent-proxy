@@ -65,6 +65,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
 
+def _read_task_output(path: str) -> Optional[str]:
+    """The tail of a background task's own output file, or None if unreadable.
+
+    Read as bytes and only the last few KB, so a large build log costs one
+    bounded seek-and-read rather than loading the whole file just to keep the
+    last 256 characters `Proxy` will actually use.
+    """
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 8192))
+            data = handle.read()
+    except OSError:
+        return None
+    return data.decode("utf-8", errors="replace")
+
+
 def _open_tailer(session_id: str, tail_mode: str, started_at: datetime) -> TranscriptTailer:
     """Point the tailer at the transcript the inner `claude` is about to write.
 
@@ -126,6 +144,7 @@ def serve(
         liveness=Liveness(on_prompt=_answer_dialog),
         fallback=FallbackEot(),
         read_entries=tailer.read_new,
+        read_output=_read_task_output,
         activity=activity,
     )
 

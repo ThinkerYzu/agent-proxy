@@ -473,9 +473,54 @@ def test_requirement_7_launch_and_completion_are_separate_events(session):
     assert [m["task"]["id"] for m in session.of_type("task_start")] == ["bg1"]
     assert [m["task"]["id"] for m in session.of_type("task_end")] == ["bg1"]
     assert session.of_type("task_start")[0]["summary"] == "run the build"
+    assert session.of_type("task_start")[0]["command"] == "make"
     assert session.of_type("task_end")[0]["exit_code"] == 0
     woken = [m for m in session.of_type("turn_start") if m["turn"]["kind"] == "unowned"]
     assert woken[0]["caused_by"] == "bg1"
+
+
+def test_requirement_7_task_end_carries_the_tail_of_the_output_file(session):
+    """`output` is read from the file the notification names, capped at 256
+    characters — the tail, since that is where a log's own verdict lands."""
+    start_turn(session, "start the build")
+    launch_task(session, "toolu_1", "bg1")
+    session.task_outputs["/tmp/bg1.output"] = "a" * 300 + "TAIL"
+    session.writes(
+        user_text(notification("bg1", "toolu_1", output_file="/tmp/bg1.output"))
+    )
+    session.run()
+
+    ended = session.of_type("task_end")[0]
+    assert ended["output"] == ("a" * 252 + "TAIL")
+    assert len(ended["output"]) == 256
+    assert "output_file" not in ended
+
+
+def test_requirement_7_task_end_output_is_null_with_no_output_file(session):
+    """A task no one reported an output file for reads as `null`, not an error."""
+    start_turn(session, "start the build")
+    launch_task(session, "toolu_1", "bg1")
+    finish_turn(session)
+    complete_task_while_idle(session, "bg1", "toolu_1")
+
+    ended = session.of_type("task_end")[0]
+    assert ended["output"] is None
+    assert "output_file" not in ended
+
+
+def test_requirement_7_task_end_output_at_the_cap_is_not_truncated(session):
+    """256 characters of output come back whole — the cap trims, it never pads
+    or drops content that already fits."""
+    start_turn(session, "start the build")
+    launch_task(session, "toolu_1", "bg1")
+    exact = "x" * 256
+    session.task_outputs["/tmp/bg1.output"] = exact
+    session.writes(
+        user_text(notification("bg1", "toolu_1", output_file="/tmp/bg1.output"))
+    )
+    session.run()
+
+    assert session.of_type("task_end")[0]["output"] == exact
 
 
 def test_requirement_7_a_completion_that_wakes_nothing_is_still_reported(session):

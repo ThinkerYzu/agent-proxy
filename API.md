@@ -202,8 +202,8 @@ a queued turn, no interrupt for a running one.
 | `tool_use` | the assistant called a tool | `tool`, `input`, `tool_use_id` |
 | `tool_result` | a tool returned | `tool_use_id`, `content`, `is_error` |
 | `turn_end` | a turn finished | `basis`, `outcome`, `usage` |
-| `task_start` | background work was launched | `task` (`{id, kind}`), `summary` (string or null) |
-| `task_end` | background work ended | `task` (`{id, kind}`), `status`, `exit_code` (int or null) |
+| `task_start` | background work was launched | `task` (`{id, kind}`), `summary` (string or null), `command` (string or null) |
+| `task_end` | background work ended | `task` (`{id, kind}`), `status`, `exit_code` (int or null), `output` (string or null) |
 | `state` | reply to `status` | `turns`, `tasks`, `ref` if the query carried one |
 | `error` | a rejected command, or a session failure | `error` (string), `ref` if a rejected command carried one |
 
@@ -219,6 +219,14 @@ Notes on the fields that carry weight:
   the work ended, which `exit_code` alone cannot tell you and which is often
   absent for anything but a shell command. Every one of the four ends the task
   and drops the count; do not treat `completed` as the only ending.
+- **`task_start.command`** is the shell text for a `shell` task (Bash's own
+  `command` input, the same source `summary` reads `description` from) and
+  `null` for a `monitor` or `agent` task, which has no single command.
+- **`task_end.output`** is the last 256 characters of the task's own output
+  file, or `null` when there is none to read (a monitor or agent task, or a
+  shell task whose file the proxy could not read). A preview for the client
+  to show, not the log — there is no way to ask for more of it, and no
+  mid-flight read while the task is still running.
 - **`turn_start.caused_by`** is a background task id, tying an unowned turn to
   the work whose completion woke it. It always names a task the client has
   already seen a `task_start` for.
@@ -234,7 +242,7 @@ has seen before:
 {"seq": 88, "type": "state",
  "outstanding": {"user": 1, "unowned": 0, "background": 1, "monitor": 0, "agent": 0},
  "turns": [{"id": "t-4", "kind": "user", "state": "queued", "caused_by": null}],
- "tasks": [{"id": "bunha2ebm", "kind": "shell", "summary": "build firefox"}]}
+ "tasks": [{"id": "bunha2ebm", "kind": "shell", "summary": "build firefox", "command": "./mach build"}]}
 ```
 
 Give the `status` a `ref` and the `state` carries it back; two queries in

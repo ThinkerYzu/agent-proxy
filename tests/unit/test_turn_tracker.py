@@ -74,12 +74,18 @@ def marker(subtype: str = "turn_duration", duration_ms: int = 1000) -> dict:
 
 
 def notification(
-    task_id: str, tool_use_id: str, exit_code: int = 0, status: str = "completed"
+    task_id: str,
+    tool_use_id: str,
+    exit_code: int = 0,
+    status: str = "completed",
+    output_file: str | None = None,
 ) -> str:
+    output_tag = f"<output-file>{output_file}</output-file>\n" if output_file else ""
     return (
         "<task-notification>\n"
         f"<task-id>{task_id}</task-id>\n"
         f"<tool-use-id>{tool_use_id}</tool-use-id>\n"
+        f"{output_tag}"
         f"<status>{status}</status>\n"
         f'<summary>Background command "work" completed (exit code {exit_code})</summary>\n'
         "</task-notification>"
@@ -347,6 +353,7 @@ def test_launch_and_mid_turn_completion_leave_no_extra_turn(tracker):
     events = launch_background(tracker, "bg1", "toolu_1")
     assert types_of(events) == ["tool_use", "task_start", "tool_result"]
     assert events[1]["summary"] == "work"
+    assert events[1]["command"] == "true"
     assert tracker.outstanding()["background"] == 1
 
     events = tracker.on_entry(queue_operation("enqueue", notification("bg1", "toolu_1")))
@@ -356,6 +363,58 @@ def test_launch_and_mid_turn_completion_leave_no_extra_turn(tracker):
     tracker.on_entry(marker())
     assert len(tracker.turns) == 1
     assert tracker.outstanding() == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
+
+
+def test_task_start_carries_the_command_that_launched_it(tracker):
+    """`command` comes from the same `tool_use` block `summary` is cached from."""
+    running_user_turn(tracker)
+    tracker.on_entry(assistant_tool_use("toolu_1", "run the linter", background=True))
+    events = tracker.on_entry(
+        tool_result("toolu_1", "Command running in background with ID: bg1.")
+    )
+    assert events[0]["command"] == "true"
+
+
+def test_task_end_carries_the_notifications_output_file(tracker):
+    """`output_file` is a path here — `TurnTracker` does no I/O — for `Proxy`
+    to resolve into `output` before the message reaches a client."""
+    running_user_turn(tracker)
+    launch_background(tracker, "bg1", "toolu_1")
+    events = tracker.on_entry(
+        user_text(notification("bg1", "toolu_1", output_file="/tmp/bg1.output"))
+    )
+    assert types_of(events) == ["task_end"]
+    assert events[0]["output_file"] == "/tmp/bg1.output"
+
+
+def test_a_task_with_no_command_input_reports_command_as_null(tracker):
+    """A monitor or subagent's launching `tool_use` has no `command` field at
+    all — unlike Bash, whose real shape every other test here stands in for."""
+    running_user_turn(tracker)
+    tracker.on_entry(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "Monitor",
+                        "input": {"pattern": "Unit tests: (success|failure)"},
+                    }
+                ]
+            },
+        }
+    )
+    events = tracker.on_entry(
+        tool_result(
+            "toolu_1",
+            "Monitor started (task bmon, timeout 60000ms). You will be notified "
+            "on each event.",
+        )
+    )
+    assert events[0]["task"]["kind"] == "monitor"
+    assert events[0]["command"] is None
 
 
 def test_idle_completion_starts_an_unowned_turn_that_names_its_cause(tracker):

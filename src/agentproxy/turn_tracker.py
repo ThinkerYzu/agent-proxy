@@ -89,7 +89,7 @@ _LAUNCH_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
 )
 
 _NOTIFICATION_TAG_RE = re.compile(
-    r"<(task-id|tool-use-id|status|summary)>(.*?)</\1>", re.DOTALL
+    r"<(task-id|tool-use-id|status|summary|output-file)>(.*?)</\1>", re.DOTALL
 )
 _EXIT_CODE_RE = re.compile(r"exit code (-?\d+)")
 
@@ -138,9 +138,11 @@ class BackgroundTask:
     kind: str = TASK_UNKNOWN
     tool_use_id: Optional[str] = None
     summary: Optional[str] = None
+    command: Optional[str] = None
     state: str = TASK_RUNNING
     status: Optional[str] = None
     exit_code: Optional[int] = None
+    output_file: Optional[str] = None
 
 
 class TurnTracker:
@@ -163,6 +165,7 @@ class TurnTracker:
         self._candidate_turn: Optional[Turn] = None
         self._typed_turn: Optional[Turn] = None
         self._tool_descriptions: dict[str, str] = {}
+        self._tool_commands: dict[str, str] = {}
         self._last_enqueued_task: Optional[str] = None
         self._dequeued_cause: Optional[str] = None
 
@@ -333,7 +336,7 @@ class TurnTracker:
                 if t.state != STATE_ENDED
             ],
             "tasks": [
-                {"id": b.id, "kind": b.kind, "summary": b.summary}
+                {"id": b.id, "kind": b.kind, "summary": b.summary, "command": b.command}
                 for b in self._tasks.values()
                 if b.state != TASK_DONE
             ],
@@ -433,6 +436,9 @@ class TurnTracker:
                 description = tool_input.get("description")
                 if isinstance(description, str):
                     self._tool_descriptions[block.get("id")] = description
+                command = tool_input.get("command")
+                if isinstance(command, str):
+                    self._tool_commands[block.get("id")] = command
                 events.append(
                     {
                         "type": "tool_use",
@@ -607,6 +613,7 @@ class TurnTracker:
             kind=kind,
             tool_use_id=tool_use_id,
             summary=self._tool_descriptions.get(tool_use_id),
+            command=self._tool_commands.get(tool_use_id),
         )
         self._tasks[task_id] = task
         return [self._task_start_event(task)]
@@ -617,6 +624,7 @@ class TurnTracker:
             "type": "task_start",
             "task": {"id": task.id, "kind": task.kind},
             "summary": task.summary,
+            "command": task.command,
         }
 
     def _end_task(
@@ -627,6 +635,10 @@ class TurnTracker:
         The one place that closes a task, so every ending — a terminal
         `<task-notification>`, a session failure, a `TaskStop` confirmation —
         produces the same shape on the wire.
+
+        `output_file` is a local path, not wire content — the tracker does no
+        I/O (see module docstring), so `Proxy` reads it, caps it, and replaces
+        it with `output` before the message reaches a client.
         """
         task.state = TASK_DONE
         task.status = status
@@ -636,6 +648,7 @@ class TurnTracker:
             "task": {"id": task.id, "kind": task.kind},
             "status": task.status,
             "exit_code": task.exit_code,
+            "output_file": task.output_file,
         }
 
     def _note_task_stop(self, block: dict) -> list[dict]:
@@ -694,6 +707,11 @@ class TurnTracker:
             self._tasks[task_id] = task
             log.log_text("tracker", f"background task {task_id} first seen mid-life")
             events.append(self._task_start_event(task))
+        if note["output_file"]:
+            # Only the notification carries this, never the launch — so it is
+            # picked up here regardless of whether `task` is new or already
+            # known, and in time for `_end_task` to put it on `task_end`.
+            task.output_file = note["output_file"]
         if note["status"] not in TERMINAL_STATUSES:
             return events
         if task.state == TASK_DONE:
@@ -761,6 +779,7 @@ def _parse_notification(text: Optional[str]) -> Optional[dict]:
         "status": tags.get("status"),
         "summary": summary,
         "exit_code": int(exit_match.group(1)) if exit_match else None,
+        "output_file": tags.get("output-file"),
     }
 
 

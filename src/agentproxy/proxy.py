@@ -25,6 +25,12 @@ from agentproxy.submit_queue import SubmitQueue
 from agentproxy.turn_tracker import TurnTracker
 
 
+# `task_end.output` is a preview, not a log dump — the wire carries the last
+# this many characters of the task's output file, which is where a build or
+# test log's own verdict actually lands.
+TASK_OUTPUT_MAX_CHARS = 256
+
+
 def _tagged(events: list[dict], ref: object) -> list[dict]:
     """Stamp a command's `ref` on the messages answering it.
 
@@ -50,6 +56,7 @@ class Proxy:
         liveness: Liveness,
         fallback: FallbackEot,
         read_entries: Callable[[], list[dict]],
+        read_output: Callable[[str], Optional[str]],
         activity: dict,
     ) -> None:
         self._tracker = tracker
@@ -58,6 +65,7 @@ class Proxy:
         self._liveness = liveness
         self._fallback = fallback
         self._read_entries = read_entries
+        self._read_output = read_output
         # Shared with the io loop, which stamps `last_pty` on every read and
         # reads `last_activity` for its own idle ceiling. Both clocks are
         # monotonic seconds.
@@ -255,7 +263,19 @@ class Proxy:
         for event in events:
             if event.get("type") == "turn_start":
                 self._fallback.note_turn_start()
+            if event.get("type") == "task_end":
+                self._resolve_output(event)
             self._emitter.emit(event)
+
+    def _resolve_output(self, event: dict) -> None:
+        """Replace a `task_end`'s `output_file` path with actual `output` text.
+
+        The one place this read happens — `TurnTracker` does no I/O by design,
+        so a task's output file is only a path until it reaches here.
+        """
+        path = event.pop("output_file", None)
+        content = self._read_output(path) if path else None
+        event["output"] = content[-TASK_OUTPUT_MAX_CHARS:] if content else None
 
     def _reject(self, reason: str, ref: object = None) -> Optional[dict]:
         """Report a command the proxy will not act on, and type nothing.
