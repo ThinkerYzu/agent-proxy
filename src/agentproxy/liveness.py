@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from agentproxy import log
 
@@ -30,17 +30,12 @@ RESUME_PROMPT = "resume_prompt"
 _TRUST_MARKER = "I trust this folder"
 _RESUME_MARKER = "Resume full session as-is"
 
-# What to type at each dialog. The trust prompt's first option is already
-# highlighted, so Enter accepts it — consistent with the caller having opted
-# into `--dangerously-skip-permissions` already. The resume selector defaults
-# to "Resume from summary"; Down then Enter takes "Resume full session as-is"
-# instead, so a resumed session continues at full fidelity. The `\r` is a write
-# of its own because one coalesced into the same write as the bytes before it
-# gets swallowed by the inner.
-PROMPT_ANSWERS = {
-    TRUST_PROMPT: (b"\r",),
-    RESUME_PROMPT: (b"\x1b[B", b"\r"),
-}
+# Last-resort answer when a dialog's marker text is on screen but the
+# navigation to it can't be computed (`_keys_for_dialog` returns None) — a
+# layout `_INPUT_MARKER` doesn't find a selection glyph on. A bare Enter is
+# the same blind bet the old fixed-answer table made; logged loudly since a
+# wrong guess here is a silent hang or a silent exit, not an error.
+_BLIND_ANSWER = (b"\r",)
 
 # How long after the first idle frame to wait for a second frame before calling
 # the inner settled. It initialises its keyboard handler lazily on first input;
@@ -62,7 +57,7 @@ _INPUT_MARKER = "❯"
 _ACTIVE_FOOTER_RE = re.compile(r"esc to interrupt")
 
 
-PromptCallback = Callable[[str], None]
+PromptCallback = Callable[[str, Tuple[bytes, ...]], None]
 
 
 class Liveness:
@@ -71,7 +66,10 @@ class Liveness:
     Feed it each committed frame with `on_commit`; read `is_idle` to gate
     typing and to drive the fallback end-of-turn tier. `on_prompt`, if given,
     fires once per appearance of a modal dialog with `TRUST_PROMPT` or
-    `RESUME_PROMPT` so the caller can answer it.
+    `RESUME_PROMPT` and the keys that answer it — computed from the frame
+    itself (which row carries the wanted option, which row the inner has
+    currently selected) rather than a fixed guess, so a `claude` release that
+    reorders a dialog's options doesn't silently answer the wrong one.
     """
 
     def __init__(
@@ -153,8 +151,46 @@ class Liveness:
         if showing and not self._showing[prompt]:
             log.log_text("liveness", f"{prompt} showing")
             if self._on_prompt is not None:
-                self._on_prompt(prompt)
+                self._on_prompt(prompt, self._keys_for_dialog(rows, marker))
         self._showing[prompt] = showing
+
+    @staticmethod
+    def _keys_for_dialog(rows: List[str], marker: str) -> Tuple[bytes, ...]:
+        """The arrow-then-Enter sequence that selects the row carrying `marker`.
+
+        Reads the frame rather than assuming an option's position, because a
+        dialog's default has already changed under this module once — see
+        `on_prompt`'s docstring. `marker`'s own row is the wanted option;
+        whichever row starts with the selection glyph is where the inner's
+        cursor already sits. One `Down`/`Up` per row of difference — every
+        dialog seen so far lays its options on consecutive rows with nothing
+        between them, so a row of difference is an option of difference.
+
+        Falls back to `_BLIND_ANSWER` (and logs the rows, same as an
+        unreadable frame) when either row can't be found — a layout change
+        deep enough that `marker` itself still matched but nothing here can
+        orient against it.
+        """
+        target_row = next((i for i, row in enumerate(rows) if marker in row), None)
+        selected_row = next(
+            (i for i, row in enumerate(rows) if row.strip().startswith(_INPUT_MARKER)),
+            None,
+        )
+        if target_row is None or selected_row is None:
+            log.log_text(
+                "liveness",
+                f"dialog {marker!r}: could not locate target/selection row "
+                f"(target={target_row}, selected={selected_row}); guessing {_BLIND_ANSWER!r}",
+            )
+            for index, row in enumerate(rows):
+                if row.strip():
+                    log.log_text("liveness", f"  row[{index:02d}]: {row!r}")
+            return _BLIND_ANSWER
+        delta = target_row - selected_row
+        if delta == 0:
+            return (b"\r",)
+        step = b"\x1b[B" if delta > 0 else b"\x1b[A"
+        return (step,) * abs(delta) + (b"\r",)
 
     def _note_unknown_frame(self, rows: List[str]) -> None:
         """Log the first few unreadable frames, so a version bump is diagnosable.

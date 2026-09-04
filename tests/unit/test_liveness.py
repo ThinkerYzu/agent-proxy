@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from agentproxy.liveness import (
-    PROMPT_ANSWERS,
     RESUME_PROMPT,
     TRUST_PROMPT,
     Liveness,
@@ -119,29 +118,62 @@ def test_waiting_long_enough_settles_it_with_no_second_frame(clock):
 
 
 def test_the_trust_prompt_is_reported_once_per_appearance(clock):
-    seen: list[str] = []
-    liveness = Liveness(on_prompt=seen.append, clock=clock)
-    dialog = Screen(["Do you trust the files in this folder?", "❯ 1. Yes, I trust this folder"])
+    seen: list[tuple[str, tuple[bytes, ...]]] = []
+    liveness = Liveness(on_prompt=lambda p, k: seen.append((p, k)), clock=clock)
+    # The live layout, not the historical guess: the selection glyph sits on
+    # "No, exit", one row above "Yes, I trust this folder" — confirmed by
+    # capturing a real trust dialog and observing that a bare Enter (which
+    # used to assume "Yes" was pre-highlighted) left the session dead with no
+    # further frame, while Down-then-Enter cleanly exited the inner.
+    dialog = Screen(["❯ No, exit", "  Yes, I trust this folder"])
     liveness.on_commit(dialog)
     liveness.on_commit(dialog)
-    assert seen == [TRUST_PROMPT]
+    assert [prompt for prompt, _ in seen] == [TRUST_PROMPT]
     assert not liveness.is_idle
 
     liveness.on_commit(panel())
     liveness.on_commit(dialog)
-    assert seen == [TRUST_PROMPT, TRUST_PROMPT]
+    assert [prompt for prompt, _ in seen] == [TRUST_PROMPT, TRUST_PROMPT]
+
+
+def test_the_trust_prompt_answer_navigates_down_to_the_wanted_option(clock):
+    """The keys are computed from the frame, not assumed — see the module docstring."""
+    seen: list[tuple[str, tuple[bytes, ...]]] = []
+    liveness = Liveness(on_prompt=lambda p, k: seen.append((p, k)), clock=clock)
+    liveness.on_commit(Screen(["❯ No, exit", "  Yes, I trust this folder"]))
+    [(_, keys)] = seen
+    assert keys == (b"\x1b[B", b"\r")
+
+
+def test_the_trust_prompt_answer_is_a_bare_enter_when_already_selected(clock):
+    """A future release that restores "Yes" as the default needs no code change."""
+    seen: list[tuple[str, tuple[bytes, ...]]] = []
+    liveness = Liveness(on_prompt=lambda p, k: seen.append((p, k)), clock=clock)
+    liveness.on_commit(Screen(["❯ Yes, I trust this folder", "  No, exit"]))
+    [(_, keys)] = seen
+    assert keys == (b"\r",)
 
 
 def test_the_resume_selector_is_reported_too(clock):
-    seen: list[str] = []
-    liveness = Liveness(on_prompt=seen.append, clock=clock)
+    seen: list[tuple[str, tuple[bytes, ...]]] = []
+    liveness = Liveness(on_prompt=lambda p, k: seen.append((p, k)), clock=clock)
     liveness.on_commit(
         Screen(["❯ 1. Resume from summary", "  2. Resume full session as-is"])
     )
-    assert seen == [RESUME_PROMPT]
+    assert [prompt for prompt, _ in seen] == [RESUME_PROMPT]
+    [(_, keys)] = seen
+    assert keys == (b"\x1b[B", b"\r")
 
 
-def test_each_dialog_has_an_answer_to_type():
-    """A recognised dialog with no answer would hang exactly as an unknown one."""
-    assert set(PROMPT_ANSWERS) == {TRUST_PROMPT, RESUME_PROMPT}
-    assert all(keys for keys in PROMPT_ANSWERS.values())
+def test_a_dialog_whose_selection_glyph_cant_be_found_falls_back_to_enter(clock):
+    """No selection row at all — a layout change deep enough to disorient this.
+
+    Still answers something (a bare Enter) rather than leaving the dialog
+    entirely untouched, on the same "a guess beats a permanent hang" logic
+    the old fixed-answer table used throughout.
+    """
+    seen: list[tuple[str, tuple[bytes, ...]]] = []
+    liveness = Liveness(on_prompt=lambda p, k: seen.append((p, k)), clock=clock)
+    liveness.on_commit(Screen(["  Yes, I trust this folder", "  No, exit"]))
+    [(_, keys)] = seen
+    assert keys == (b"\r",)

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from typing import IO, Optional, Sequence
 
@@ -28,7 +29,7 @@ from agentproxy.io_loop import (
     SEND_QUIESCENCE_S,
     run as run_loop,
 )
-from agentproxy.liveness import PROMPT_ANSWERS, Liveness
+from agentproxy.liveness import Liveness
 from agentproxy.protocol import Emitter
 from agentproxy.proxy import Proxy
 from agentproxy.pty_driver import PtyDriver
@@ -37,6 +38,13 @@ from agentproxy.submit_queue import SubmitQueue
 from agentproxy.transcript_tailer import TranscriptTailer
 from agentproxy.turn_tracker import TurnTracker
 
+
+# Beat between the keys of a multi-key dialog answer (e.g. Down then Enter for
+# the trust/resume prompts). Empirically 150ms comfortably clears the repaint
+# a Down-arrow triggers; the failure mode below SUBMIT_DELAY (0.05s) is a
+# permanently stuck session with no retry, so this errs high rather than
+# tight. Tunable for diagnostics.
+DIALOG_ANSWER_DELAY_S = float(os.environ.get("AGENTPROXY_DIALOG_ANSWER_DELAY_S", "0.15"))
 
 # Why the loop ended, in the words the closing `error` message uses. `stop` is
 # in here for one case only: the client closed stdin while a background task
@@ -129,9 +137,24 @@ def serve(
         inner_claude.build_argv(argv), env=inner_claude.build_env(dict(os.environ))
     )
 
-    def _answer_dialog(prompt: str) -> None:
-        for keys in PROMPT_ANSWERS.get(prompt, ()):
-            driver.write(keys)
+    def _answer_dialog(prompt: str, keys: Sequence[bytes]) -> None:
+        # `keys` is computed per frame by `Liveness` from where the wanted
+        # option actually sits on screen, not a fixed guess — see its
+        # docstring for why a fixed one broke once already.
+        #
+        # A key written the instant the dialog is detected can arrive while
+        # the inner is still mid-repaint of that very frame and gets eaten
+        # the same way an unpaced submit CR does (see SUBMIT_DELAY) —
+        # observed live as a trust-prompt dialog that renders correctly but
+        # never advances, with no further frame ever produced. `on_prompt`
+        # fires once per appearance, so a swallowed key here has no retry.
+        # `DIALOG_ANSWER_DELAY_S` gives each key, including the first, a beat
+        # to land against a settled frame; a multi-key answer (arrow(s) then
+        # Enter) needs the same beat between its own keys too, since the
+        # arrow's repaint is exactly what the Enter must not race.
+        for key in keys:
+            time.sleep(DIALOG_ANSWER_DELAY_S)
+            driver.write(key)
 
     tracker = TurnTracker()
     # Shared with the io loop, which stamps `last_pty` on every pty read. The
