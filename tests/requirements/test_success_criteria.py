@@ -9,6 +9,7 @@
 | 5 — a client's end-of-turn is its own | `tests/integration/test_live_wrapping.py::test_each_client_wait_resolves_on_its_own_turn_id` |
 | 6 — reconnect is correct | here — `test_criterion_6_*` |
 | 7 — an escaped process is counted until it exits | here — `test_criterion_7_*`, over a scripted process tree; the kernel mechanism itself is `tests/unit/test_orphans.py::test_the_flag_adopts_a_grandchild_whose_parent_exited`, and the live tier runs the same shape through a real `claude` |
+| 8 — a cancelled turn ends as cancelled, and the next prompt is its own turn | here — `test_criterion_8_*`, the three shapes in one session; which shape the inner produces is its choice, so the live tier drives (b) and (c) through a real `claude` |
 
 """
 
@@ -379,4 +380,65 @@ def test_criterion_7_a_process_the_task_left_behind_is_counted_until_it_exits():
     ends = session.of_type("orphan_end")
     assert [(m["process"]["pid"], m["status"], m["exit_code"]) for m in ends] == [(4242, "exited", 0)]
     assert not any(client.counts.values())
+    invariants.all_of_them(session.messages())
+
+
+# ----------------------------------------------------------------------
+# Criterion 8 — a cancelled turn ends as cancelled, and the next prompt is its own turn
+# ----------------------------------------------------------------------
+
+
+def test_criterion_8_all_three_cancel_shapes_leave_the_counts_at_zero(session):
+    """(a) withdrawn while queued, (b) interrupted mid-response, (c) handed
+    back before the model produced anything — then a fresh prompt that must
+    bind to its own id, not to leftover text."""
+    from tests.harness import declined_tool, interruption
+
+    client = ReferenceClient()
+
+    # (b) a turn interrupted mid-response, with (a) queued behind it.
+    b = session.submit("build it")
+    session.run()
+    session.footer_idle = False
+    session.writes(user_text("build it"), assistant_tool_use("toolu_1", "build"))
+    session.run()
+    a = session.submit("then test it")
+    session.cancel(a)
+    session.cancel(b)
+    session.writes(declined_tool("toolu_1"), interruption(for_tool_use=True))
+    session.footer_idle = True
+    session.run()
+
+    # (c) a turn cancelled before anything was written: the inner hands the
+    # prompt back, and the composer must be cleared before the next prompt.
+    c = session.submit("write an essay")
+    session.run()
+    session.footer_idle = False
+    session.writes(user_text("write an essay"))
+    session.run()
+    session.cancel(c)
+    session.footer_idle = True
+    session.composer = "write an essay"
+    session.tick()
+    session.run(advance=0.7)
+
+    d = session.submit("Reply with exactly: AFTER")
+    session.run()
+    session.writes(user_text("Reply with exactly: AFTER"), assistant_text("AFTER"), marker())
+    session.run()
+
+    for message in session.messages():
+        client.consume(message)
+    assert client.derived == client.counts
+    assert not client.busy
+    ends = {m["turn"]["id"]: (m["basis"], m["outcome"]) for m in session.of_type("turn_end")}
+    assert ends == {
+        a: ("cancel:withdrawn", "cancelled"),
+        b: ("marker:interrupted", "cancelled"),
+        c: ("cancel:restored", "cancelled"),
+        d: ("marker:turn_duration", "success"),
+    }
+    assert session.typed == ["build it", "write an essay", "Reply with exactly: AFTER"]
+    assert [m["turn"]["kind"] for m in session.of_type("turn_start")] == ["user"] * 3
+    assert not any(session.messages()[-1]["outstanding"].values())
     invariants.all_of_them(session.messages())

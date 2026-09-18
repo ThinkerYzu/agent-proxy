@@ -177,3 +177,70 @@ def test_a_dialog_whose_selection_glyph_cant_be_found_falls_back_to_enter(clock)
     liveness.on_commit(Screen(["  Yes, I trust this folder", "  No, exit"]))
     [(_, keys)] = seen
     assert keys == (b"\r",)
+
+
+# ----------------------------------------------------------------------
+# The composer — what a cancelled prompt looks like when handed back
+# ----------------------------------------------------------------------
+
+
+def composer(*rows: str, footer: str = IDLE_FOOTER) -> Screen:
+    """A panel whose composer spans `rows`: the ❯ row, then continuation rows."""
+    return Screen(["some earlier output", HRULE, *rows, HRULE, footer])
+
+
+def test_a_composer_holding_a_wrapped_prompt_still_reads_idle(clock):
+    """The band used to be exactly four rows. A prompt the inner hands back
+    after a cancel wraps onto more, and the footer is still where it says."""
+    liveness = Liveness(clock=clock)
+    liveness.on_commit(composer("❯ Write a long essay about the history of", "  the pty in Unix"))
+    assert liveness.is_idle
+    liveness.on_commit(
+        composer("❯ Write a long essay about the history of", "  the pty in Unix", footer=ACTIVE_FOOTER)
+    )
+    assert not liveness.is_idle
+
+
+def test_composer_holds_matches_the_first_line_of_the_typed_text(clock):
+    liveness = Liveness(clock=clock)
+    liveness.on_commit(composer("❯ Write a 1500 word essay about the history of the pty in Unix."))
+    assert liveness.composer_holds("Write a 1500 word essay about the history of the pty in Unix.")
+    assert not liveness.composer_holds("Reply with exactly: AFTER")
+
+
+def test_composer_holds_survives_the_composers_own_wrapping(clock):
+    """The inner wraps at the panel width and indents the continuation; the
+    typed text had neither, and whitespace is all that differs."""
+    liveness = Liveness(clock=clock)
+    liveness.on_commit(
+        composer(
+            "❯ Use the Bash tool, NOT in background mode, to run exactly: python3 -c",
+            "  \"import time; time.sleep(40)\"   Then reply with exactly: DONE",
+        )
+    )
+    assert liveness.composer_holds(
+        "Use the Bash tool, NOT in background mode, to run exactly: python3 -c "
+        '"import time; time.sleep(40)"   Then reply with exactly: DONE'
+    )
+
+
+def test_composer_holds_compares_only_the_first_line_of_a_multi_line_prompt(clock):
+    liveness = Liveness(clock=clock)
+    liveness.on_commit(composer("❯ first line of the prompt", "  second line"))
+    assert liveness.composer_holds("first line of the prompt\nsecond line\nthird")
+
+
+def test_the_placeholder_is_not_a_held_prompt(clock):
+    """An empty composer shows a dimmed suggestion; it is compared against
+    the cancelled prompt, so it can only match a prompt that *is* it."""
+    liveness = Liveness(clock=clock)
+    liveness.on_commit(panel())
+    assert not liveness.composer_holds("fix the bug")
+    assert not liveness.composer_holds("   ")
+
+
+def test_composer_holds_is_false_before_any_panel_was_seen(clock):
+    liveness = Liveness(clock=clock)
+    assert not liveness.composer_holds("anything")
+    liveness.on_commit(Screen(["a dialog with no panel"]))
+    assert not liveness.composer_holds("anything")

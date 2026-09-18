@@ -4,7 +4,9 @@ This is the whole of what agent-proxy reads off the screen. Every piece of
 message *content* comes from the transcript, so
 nothing here parses a tool call, a result, or a line of prose — it answers one
 question, plus the two modal dialogs that must be dismissed before the inner
-`claude` will accept a keystroke at all.
+`claude` will accept a keystroke at all, plus one more since cancellation:
+does the composer hold a given text? That one compares the composer against
+words the proxy itself typed; it still parses nothing.
 
 claudejson's `block_extractor` is where the frame-reading rules were worked
 out; this module keeps its idle detection and its two dialog markers and drops
@@ -49,6 +51,11 @@ SETTLE_QUIESCENCE_S = float(os.environ.get("AGENTPROXY_SETTLE_QUIESCENCE_S", "0.
 _HRULE_RE = re.compile(r"^─{60,}$")
 _INPUT_MARKER = "❯"
 
+# How much of a text's first line `composer_holds` compares. Enough to tell
+# one prompt from another and short enough that a line the composer has
+# word-wrapped over several rows still reads as one string once joined.
+_COMPOSER_PROBE_CHARS = 60
+
 # Idle is the *absence* of the active-turn hint, not the presence of an idle
 # one. The idle footer's text varies with context ("? for shortcuts", a bypass-
 # permissions banner, a context-left warning), but "esc to interrupt" is shown
@@ -87,6 +94,9 @@ class Liveness:
         self._frames_since_first_idle = 0
         self._has_settled = False
         self._unknown_frames = 0
+        # The composer rows of the last frame that had an input panel, ❯ row
+        # first. None until one has been seen.
+        self._composer_rows: Optional[List[str]] = None
 
     @property
     def is_idle(self) -> bool:
@@ -134,7 +144,9 @@ class Liveness:
             self._note_unknown_frame(rows)
             is_idle = False
         else:
-            is_idle = not bool(_ACTIVE_FOOTER_RE.search(rows[band + 3]))
+            input_row, footer_row = band
+            self._composer_rows = rows[input_row : footer_row - 1]
+            is_idle = not bool(_ACTIVE_FOOTER_RE.search(rows[footer_row]))
 
         if is_idle != self._is_idle:
             log.log_text("liveness", "idle" if is_idle else "active")
@@ -145,6 +157,29 @@ class Liveness:
                 self._first_idle_at = self._clock()
         else:
             self._frames_since_first_idle += 1
+
+    def composer_holds(self, text: str) -> bool:
+        """True when the last panel's composer begins with `text`'s first line.
+
+        The one question asked of the composer's content, and only ever about
+        text the proxy typed itself: after a cancel, the inner may hand the
+        prompt back unsent, and the proxy has to know before it types anything
+        else. Both sides are whitespace-normalised so the composer's own
+        word-wrapping and continuation indents do not matter, and the
+        comparison is on the first `_COMPOSER_PROBE_CHARS` of the first line.
+        The empty composer's dimmed `Try "…"` placeholder cannot match, since
+        it is not the prompt.
+        """
+        if self._composer_rows is None:
+            return False
+        first_line = next((line for line in text.splitlines() if line.strip()), "")
+        probe = " ".join(first_line.split())[:_COMPOSER_PROBE_CHARS]
+        if not probe:
+            return False
+        shown = " ".join(self._composer_rows)
+        if shown.startswith(_INPUT_MARKER):
+            shown = shown[len(_INPUT_MARKER) :]
+        return " ".join(shown.split()).startswith(probe)
 
     def _check_prompt(self, rows: List[str], marker: str, prompt: str) -> None:
         showing = any(marker in row for row in rows)
@@ -210,14 +245,24 @@ class Liveness:
                 log.log_text("liveness", f"  row[{index:02d}]: {row!r}")
 
     @staticmethod
-    def _find_input_panel(rows: List[str]) -> Optional[int]:
-        """Index of the four-row [hrule, ❯, hrule, footer] band, if it is there."""
-        for row in range(len(rows) - 4, -1, -1):
-            if (
-                _HRULE_RE.match(rows[row])
-                and rows[row + 1].startswith(_INPUT_MARKER)
-                and _HRULE_RE.match(rows[row + 2])
-                and rows[row + 3].strip()
-            ):
-                return row
+    def _find_input_panel(rows: List[str]) -> Optional[Tuple[int, int]]:
+        """The (❯ row, footer row) of the [hrule, ❯ …, hrule, footer] band, if there.
+
+        The composer is one row when empty and grows a row per wrapped line
+        when it holds text — which, since cancellation, it can: a prompt the
+        inner hands back is on these rows until the proxy clears it. So the
+        band is found from its bottom rule up: the footer is the non-empty
+        row under a rule, the ❯ row is the nearest row above that rule to
+        start with the marker, and the row above *that* must be a rule too.
+        """
+        for lower in range(len(rows) - 2, 0, -1):
+            if not (_HRULE_RE.match(rows[lower]) and rows[lower + 1].strip()):
+                continue
+            for input_row in range(lower - 1, 0, -1):
+                if _HRULE_RE.match(rows[input_row]):
+                    break
+                if rows[input_row].startswith(_INPUT_MARKER):
+                    if _HRULE_RE.match(rows[input_row - 1]):
+                        return input_row, lower + 1
+                    break
         return None

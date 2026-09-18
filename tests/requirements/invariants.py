@@ -76,15 +76,22 @@ def end_of_turn_is_typed(messages: list[dict]) -> None:
     Requirement 4. `basis` is also the design's own instrumentation — a
     `fallback:` rate above roughly zero means `claude` grew a turn shape worth
     teaching to `MARKER_BASIS` — so an end that did not name one would hide
-    the blind spot it was reporting.
+    the blind spot it was reporting. A `cancel:` basis is the third family,
+    since requirement 14: evidence that a cancelled turn stopped, read off
+    the screen or the queue rather than the transcript. `cancelled` is the
+    outcome that goes with it, and with the `marker:interrupted` entry.
     """
     for message in messages:
         if message["type"] != "turn_end":
             continue
         basis = message["basis"]
         assert message["turn"]["kind"] in TURN_KINDS, message
-        assert basis == "error" or basis.startswith(("marker:", "fallback:")), message
-        assert message["outcome"] in {"success", "error"}, message
+        assert basis == "error" or basis.startswith(("marker:", "fallback:", "cancel:")), message
+        assert message["outcome"] in {"success", "error", "cancelled"}, message
+        if message["outcome"] == "cancelled":
+            assert basis in {"marker:interrupted", "cancel:restored", "cancel:withdrawn"}, message
+        else:
+            assert not basis.startswith("cancel:") and basis != "marker:interrupted", message
         assert isinstance(message["usage"], dict), message
 
 

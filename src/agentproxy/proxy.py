@@ -9,13 +9,18 @@ hand-built frames, and read the same messages a client would.
 The io loop calls into this in five places — a stdin line arrives, a prompt is
 about to be typed, a frame settles, a tick passes, stdin closes — and asks it
 two questions: may a prompt be sent, and may the loop stop.
+
+Cancellation is the one thing here that writes to the pty of its own accord,
+through the injected `send_keys`: one `Esc` to interrupt a running turn, and
+`Esc` `Esc` to clear the composer when the inner hands the cancelled prompt
+back instead of writing an interruption entry.
 """
 
 from __future__ import annotations
 
 import json
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from agentproxy import log
 from agentproxy.fallback import BASIS_UNMATCHED, FallbackEot
@@ -23,13 +28,33 @@ from agentproxy.liveness import Liveness
 from agentproxy.orphans import OrphanExit, OrphanReaper
 from agentproxy.protocol import Emitter
 from agentproxy.submit_queue import SubmitQueue
-from agentproxy.turn_tracker import TurnTracker
+from agentproxy.turn_tracker import (
+    CANCEL_INTERRUPT,
+    CANCEL_WITHDRAWN,
+    CancelError,
+    TurnTracker,
+)
 
 
 # `task_end.output` is a preview, not a log dump — the wire carries the last
 # this many characters of the task's output file, which is where a build or
 # test log's own verdict actually lands.
 TASK_OUTPUT_MAX_CHARS = 256
+
+ESC = b"\x1b"
+# The inner's own gesture for emptying a composer that holds text: `Esc`
+# shows "Esc again to clear", and a second `Esc` inside that hint's window
+# clears it. Sent only while the composer is seen to hold the cancelled
+# prompt — on an empty composer the same two keys open the rewind picker.
+CLEAR_COMPOSER = (ESC, ESC)
+# After sending the clear, wait this long before reading the composer again:
+# the next tick's frame may predate the repaint, and re-sending into a
+# composer that has in fact just emptied is the rewind-picker case above.
+CLEAR_SETTLE_S = 0.6
+# How many times to try the clear before giving up and reopening the gate,
+# loudly. A gate held shut forever is a wedged session; a prompt typed on top
+# of leftover text is caught downstream as an unmatched turn.
+CLEAR_ATTEMPTS = 3
 
 
 def _tagged(events: list[dict], ref: object) -> list[dict]:
@@ -71,6 +96,8 @@ class Proxy:
         activity: dict,
         reaper: Optional[OrphanReaper] = None,
         kill_orphans: bool = False,
+        send_keys: Optional[Callable[[Sequence[bytes]], None]] = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._tracker = tracker
         self._emitter = emitter
@@ -87,7 +114,18 @@ class Proxy:
         # ever seen, and no `orphan` key is ever on the wire.
         self._reaper = reaper
         self._kill_orphans = kill_orphans
+        # Writes keystrokes that are not a prompt: the cancel `Esc` and the
+        # composer clear. `cli.py` paces them the way it paces dialog answers.
+        # None means the proxy cannot interrupt; `cancel` still withdraws.
+        self._send_keys = send_keys
+        self._clock = clock
         self._stdin_closed = False
+        # Set when a cancelled prompt was seen handed back to the composer.
+        # While set the send gate stays shut and each idle frame is a chance
+        # to clear it; `_clear_sent_at` throttles the retries.
+        self._composer_dirty: Optional[str] = None
+        self._clear_sent_at: Optional[float] = None
+        self._clear_attempts = 0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -165,7 +203,50 @@ class Proxy:
                 state["orphans"] = [o.to_wire() for o in self._reaper.alive()]
             self._emit(_tagged([state], ref))
             return None
+        if kind == "cancel":
+            return self._cancel(command.get("turn"), ref)
         return self._reject(f"unknown command type: {kind!r}", ref)
+
+    def _cancel(self, turn_id: object, ref: object) -> None:
+        """Answer a `cancel`: `ack` it and act on the turn's state.
+
+        The ack says the request was taken, not that the turn has ended —
+        that is the `turn_end`, which for a queued turn follows in the same
+        batch and for a running one arrives when the inner is seen to stop.
+        """
+        if not isinstance(turn_id, str) or not turn_id:
+            return self._reject("cancel needs a 'turn' id", ref)
+        try:
+            action, events = self._tracker.cancel(turn_id)
+        except CancelError as why:
+            return self._reject(str(why), ref)
+        turn = self._tracker.turn(turn_id)
+        assert turn is not None
+        self._emit(_tagged([{"type": "ack", "turn": turn.ref()}], ref))
+        if action == CANCEL_WITHDRAWN:
+            self._queue.withdraw(turn_id)
+            log.log_text("proxy", f"{turn_id} withdrawn before it was typed")
+        self._emit(events)
+        if action == CANCEL_INTERRUPT:
+            self._interrupt_if_due()
+        return None
+
+    def _interrupt_if_due(self) -> None:
+        """Send the one `Esc` a cancelled running turn is owed, once.
+
+        Called on the cancel itself and on every tick, so a turn cancelled
+        while its prompt was still being typed is interrupted the moment the
+        transcript binds it — and never a second time.
+        """
+        turn = self._tracker.running_turn
+        if turn is None or not turn.cancel_requested or turn.interrupt_sent:
+            return
+        turn.interrupt_sent = True
+        if self._send_keys is None:
+            log.log_text("proxy", f"{turn.id}: cancel requested but no way to send Esc")
+            return
+        log.log_text("proxy", f"{turn.id}: sending Esc")
+        self._send_keys((ESC,))
 
     def on_stdin_eof(self) -> None:
         """The client closed its end; finish what is in flight and stop."""
@@ -178,25 +259,36 @@ class Proxy:
     def is_ready_to_send(self) -> bool:
         """True when a queued prompt may be typed into the TUI right now.
 
-        Four conditions, and the last is the one that is easy to miss: a
+        Five conditions. The fourth is the one that is easy to miss: a
         prompt already typed but not yet seen in the transcript still owns the
         keyboard. Typing past it would leave two prompts in flight with one
         binding decision to tell them apart, which is how a turn ends up
-        matched to the wrong id.
+        matched to the wrong id. The fifth came with cancellation: a composer
+        still holding a cancelled prompt would have the next one typed onto
+        its end and submitted as one — observed, and it binds as an unowned
+        turn while the client's own sits unmatched.
         """
         return (
             self._liveness.is_idle
             and self._liveness.has_settled
             and self._tracker.running_turn is None
             and self._tracker.typed_turn is None
+            and self._composer_dirty is None
         )
 
-    def on_typed(self, message: dict) -> None:
-        """The keystrokes for a prompt are going out now."""
-        self._fallback.note_typed()
+    def on_typed(self, message: dict) -> bool:
+        """The keystrokes for a prompt are about to go out; False says type nothing.
+
+        None from the queue means the payload's turn was withdrawn by a
+        `cancel` while it waited, so the io loop drops it instead of typing
+        a prompt whose turn has already ended.
+        """
         turn = self._queue.take(message)
-        if turn is not None:
-            self._tracker.mark_typed(turn)
+        if turn is None:
+            return False
+        self._fallback.note_typed()
+        self._tracker.mark_typed(turn)
+        return True
 
     def submit_landed(self) -> bool:
         """True once the typed prompt has been recognised in the transcript.
@@ -215,9 +307,64 @@ class Proxy:
     # ------------------------------------------------------------------
 
     def on_commit(self, screen) -> None:
-        """Read a settled frame for liveness, and feed the fallback clock."""
+        """Read a settled frame for liveness, and feed the fallback clock.
+
+        Since cancellation the frame answers one more question, and only
+        after an `Esc` has gone out: is the cancelled prompt sitting on the
+        composer row? That is the inner's silent ending — nothing reaches the
+        transcript — so the turn ends here, and the composer is marked for
+        clearing before anything else may be typed.
+        """
         self._liveness.on_commit(screen)
         self._fallback.note_frame(self._liveness.is_idle)
+        if not self._liveness.is_idle:
+            return
+        turn = self._tracker.running_turn
+        if (
+            turn is not None
+            and turn.interrupt_sent
+            and turn.text
+            and self._liveness.composer_holds(turn.text)
+        ):
+            log.log_text("proxy", f"{turn.id}: prompt handed back to the composer")
+            self._composer_dirty = turn.text
+            self._clear_sent_at = None
+            self._clear_attempts = 0
+            self._emit(self._tracker.end_restored_turn())
+        self._clear_composer_if_dirty()
+
+    def _clear_composer_if_dirty(self) -> None:
+        """Empty a composer the inner left the cancelled prompt in, then reopen the gate.
+
+        Only on an idle frame that still shows the text — never blind, since
+        the same keys on an empty composer open the rewind picker — and not
+        again until `CLEAR_SETTLE_S` after the last try, because the frame
+        under the next tick may predate the repaint. Gives up after
+        `CLEAR_ATTEMPTS`: a gate held shut forever is the wedge this project
+        exists to remove, and a prompt typed onto leftover text is at least
+        caught downstream as an unmatched turn.
+        """
+        if self._composer_dirty is None:
+            return
+        now = self._clock()
+        if self._clear_sent_at is not None and now - self._clear_sent_at < CLEAR_SETTLE_S:
+            return
+        if not self._liveness.composer_holds(self._composer_dirty):
+            log.log_text("proxy", "composer clear")
+            self._composer_dirty = None
+            return
+        if self._clear_attempts >= CLEAR_ATTEMPTS or self._send_keys is None:
+            log.log_text(
+                "proxy",
+                "composer still holds the cancelled prompt and will not clear; "
+                "reopening the gate anyway",
+            )
+            self._composer_dirty = None
+            return
+        self._clear_attempts += 1
+        self._clear_sent_at = now
+        log.log_text("proxy", f"clearing the composer (attempt {self._clear_attempts})")
+        self._send_keys(CLEAR_COMPOSER)
 
     def on_iteration(self) -> None:
         """One loop tick: drain the transcript, look for orphans, check the fallback tier."""
@@ -225,6 +372,7 @@ class Proxy:
             self._fallback.note_transcript()
             self._activity["last_activity"] = time.monotonic()
             self._emit(self._tracker.on_entry(entry))
+        self._interrupt_if_due()
         self._poll_orphans()
 
         running = self._tracker.running_turn

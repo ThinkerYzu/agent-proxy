@@ -10,11 +10,15 @@ from __future__ import annotations
 import pytest
 
 from agentproxy.turn_tracker import (
+    CANCEL_HELD,
+    CANCEL_INTERRUPT,
+    CANCEL_WITHDRAWN,
     KIND_UNOWNED,
     KIND_USER,
     STATE_ENDED,
     STATE_QUEUED,
     STATE_RUNNING,
+    CancelError,
     TurnTracker,
 )
 
@@ -71,6 +75,20 @@ def tool_result(tool_use_id: str, content: str) -> dict:
 
 def marker(subtype: str = "turn_duration", duration_ms: int = 1000) -> dict:
     return {"type": "system", "subtype": subtype, "durationMs": duration_ms}
+
+
+def interruption(for_tool_use: bool = False) -> dict:
+    """The `user` entry `Esc` makes the inner write, once the model had produced
+    something. A list holding one text block, never a plain string."""
+    text = "[Request interrupted by user for tool use]" if for_tool_use else "[Request interrupted by user]"
+    return {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+
+
+def declined_tool(tool_use_id: str) -> dict:
+    return tool_result(
+        tool_use_id,
+        "The user doesn't want to proceed with this tool use. The tool use was rejected.",
+    )
 
 
 def notification(
@@ -340,6 +358,148 @@ def test_fallback_ends_a_turn_no_marker_closed(tracker):
     assert events[0]["basis"] == "fallback:idle"
     assert turn.state == STATE_ENDED
     assert tracker.end_running_turn("fallback:idle") == []
+
+
+# ----------------------------------------------------------------------
+# Cancellation — the interruption marker, and cancel by state
+# ----------------------------------------------------------------------
+
+
+def test_the_interruption_entry_ends_the_running_turn_as_cancelled(tracker):
+    turn = running_user_turn(tracker)
+    tracker.cancel(turn.id)
+    tracker.on_entry(assistant_text("half an answer", output_tokens=9))
+    events = tracker.on_entry(interruption())
+    assert types_of(events) == ["turn_end"]
+    assert events[0]["basis"] == "marker:interrupted"
+    assert events[0]["outcome"] == "cancelled"
+    assert events[0]["usage"] == {"output_tokens": 9}
+    assert tracker.outstanding()["user"] == 0
+
+
+def test_the_tool_form_follows_the_declined_tool_result_inside_the_turn(tracker):
+    """An aborted tool is declined first, in a `tool_result` that belongs to
+    the turn, and the interruption entry comes after it."""
+    turn = running_user_turn(tracker)
+    tracker.cancel(turn.id)
+    tracker.on_entry(assistant_tool_use("toolu_1", "sleep", background=False))
+    declined = tracker.on_entry(declined_tool("toolu_1"))
+    assert types_of(declined) == ["tool_result"]
+    assert declined[0]["turn"]["id"] == turn.id
+    events = tracker.on_entry(interruption(for_tool_use=True))
+    assert [(e["type"], e["basis"], e["outcome"]) for e in events] == [
+        ("turn_end", "marker:interrupted", "cancelled")
+    ]
+
+
+def test_an_interruption_nobody_asked_for_still_ends_the_turn(tracker):
+    """The proxy is the only thing typing, so this cannot happen — but if it
+    did, the turn is over either way, and the log says who did not ask."""
+    running_user_turn(tracker)
+    events = tracker.on_entry(interruption())
+    assert events[0]["outcome"] == "cancelled"
+
+
+def test_a_turn_duration_after_the_interruption_is_a_late_marker(tracker):
+    """Older inners wrote one after the interruption entry; it finds no turn
+    running and opens nothing."""
+    running_user_turn(tracker)
+    tracker.on_entry(interruption())
+    assert tracker.on_entry(marker()) == []
+    assert len(tracker.turns) == 1
+
+
+def test_an_interruption_with_nothing_running_opens_no_turn(tracker):
+    """The entry is shaped like a prompt, but it is the end of something,
+    never the start — no candidate, no phantom."""
+    assert tracker.on_entry(interruption()) == []
+    assert tracker.on_entry(assistant_text()) != []  # a real turn can still open
+    assert len(tracker.turns) == 1
+
+
+def test_an_interruption_drops_an_unconfirmed_candidate(tracker):
+    tracker.on_entry(user_text("something the inner wrote"))
+    assert tracker.on_entry(interruption()) == []
+    assert tracker.turns == []
+
+
+def test_a_prompt_worded_like_the_marker_is_still_a_prompt(tracker):
+    """The marker is a list of text blocks; a client's prompt is a string."""
+    turn = running_user_turn(tracker, "[Request interrupted by user]")
+    assert turn.state == STATE_RUNNING
+
+
+def test_cancelling_a_queued_turn_withdraws_and_ends_it_at_once(tracker):
+    turn, _ = tracker.submit("later")
+    action, events = tracker.cancel(turn.id)
+    assert action == CANCEL_WITHDRAWN
+    assert [(e["type"], e["basis"], e["outcome"]) for e in events] == [
+        ("turn_end", "cancel:withdrawn", "cancelled")
+    ]
+    assert turn.state == STATE_ENDED
+    assert tracker.outstanding()["user"] == 0
+
+
+def test_cancelling_a_running_turn_asks_for_the_interrupt_and_ends_nothing(tracker):
+    turn = running_user_turn(tracker)
+    action, events = tracker.cancel(turn.id)
+    assert action == CANCEL_INTERRUPT
+    assert events == []
+    assert turn.cancel_requested and not turn.interrupt_sent
+    assert turn.state == STATE_RUNNING
+
+
+def test_cancelling_a_typed_turn_is_held_until_it_binds(tracker):
+    """Typed but not yet in the transcript: an `Esc` now would land on an
+    idle composer. The request is kept and acted on once the turn runs."""
+    turn, _ = tracker.submit("hello")
+    tracker.mark_typed(turn)
+    action, events = tracker.cancel(turn.id)
+    assert (action, events) == (CANCEL_HELD, [])
+    assert turn.state == STATE_QUEUED
+    tracker.on_entry(user_text("hello"))
+    assert tracker.running_turn is turn and turn.cancel_requested
+
+
+def test_a_second_cancel_for_the_same_turn_asks_for_no_second_esc(tracker):
+    turn = running_user_turn(tracker)
+    tracker.cancel(turn.id)
+    assert tracker.cancel(turn.id) == (CANCEL_HELD, [])
+
+
+@pytest.mark.parametrize(
+    "setup, reason",
+    [
+        (lambda t: "t-99", "no turn"),
+        (lambda t: running_user_turn(t).id and t.end_running_turn("marker:turn_duration") and "t-1", "already ended"),
+    ],
+)
+def test_a_cancel_that_cannot_be_acted_on_is_an_error(tracker, setup, reason):
+    turn_id = setup(tracker)
+    with pytest.raises(CancelError, match=reason):
+        tracker.cancel(turn_id)
+
+
+def test_an_unowned_turn_cannot_be_cancelled(tracker):
+    """A handed-back prompt is recognised by the text the proxy typed, which
+    an unowned turn does not have — so the silent ending could not be seen."""
+    tracker.on_entry(user_text("wake-up"))
+    tracker.on_entry(assistant_text())
+    unowned = tracker.running_turn
+    assert unowned.kind == KIND_UNOWNED
+    with pytest.raises(CancelError, match="unowned"):
+        tracker.cancel(unowned.id)
+
+
+def test_the_restored_prompt_ends_the_cancelled_turn_on_screen_evidence(tracker):
+    turn = running_user_turn(tracker)
+    assert tracker.end_restored_turn() == []  # not cancelled: nothing to end
+    tracker.cancel(turn.id)
+    events = tracker.end_restored_turn()
+    assert [(e["type"], e["basis"], e["outcome"]) for e in events] == [
+        ("turn_end", "cancel:restored", "cancelled")
+    ]
+    assert tracker.end_restored_turn() == []
 
 
 # ----------------------------------------------------------------------

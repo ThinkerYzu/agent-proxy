@@ -65,7 +65,9 @@ RESUBMIT_QUIESCENCE_S = float(os.environ.get("CLAUDEJSON_RESUBMIT_QUIESCENCE_S",
 Encoder = Callable[[dict], tuple[bytes, bytes]]
 StopPredicate = Callable[[], bool]
 ReadyPredicate = Callable[[], bool]
-MessageCallback = Callable[[dict], None]
+# Returns False to veto the send: the message's turn was withdrawn while it
+# waited, so nothing is typed for it. None (the historical return) sends.
+MessageCallback = Callable[[dict], Optional[bool]]
 EofCallback = Callable[[], None]
 TickCallback = Callable[[], None]
 LineHandler = Callable[[str], Optional[dict]]
@@ -205,8 +207,9 @@ def run(
             pass
 
     def _send(msg: dict) -> None:
-        if on_user_message is not None:
-            on_user_message(msg)
+        if on_user_message is not None and on_user_message(msg) is False:
+            log.log_text("parser", "send vetoed; message dropped")
+            return
         paste, submit = encoder(msg)
         driver.write(paste)
         now = time.monotonic()

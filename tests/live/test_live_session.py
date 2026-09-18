@@ -48,6 +48,23 @@ DETACH_PROMPT = (
     "sleep 8 >/dev/null 2>&1 &   Then reply with exactly: DETACHED"
 )
 
+# A foreground tool the inner will actually run for a while (it blocks a bare
+# `sleep`), so a cancel lands mid-tool: the inner declines the tool and writes
+# its interruption entry — the transcript shape of a cancelled turn.
+LONG_TOOL_PROMPT = (
+    "Use the Bash tool, NOT in background mode, to run exactly this command: "
+    'python3 -c "import time; time.sleep(40); print(1)"   '
+    "Then reply with exactly: DONE"
+)
+# A prompt the model thinks about before writing anything, so a cancel sent
+# right after `turn_start` lands before any assistant content exists — the
+# silent shape, where the inner hands the prompt back to the composer.
+THINK_FIRST_PROMPT = (
+    "Think carefully and at length before answering, then write a 1500 word "
+    "essay about the history of the pty in Unix. Do not use any tools."
+)
+AFTER_PROMPT = "Reply with exactly: AFTER"
+
 SESSION_BUDGET_S = 180.0
 
 
@@ -189,6 +206,97 @@ def test_a_queued_prompt_a_background_task_and_an_unowned_turn_all_drain(session
         for m in messages
     )
 
+    session.stdin.close()
+    assert session.wait(timeout=60) == 0
+
+
+def _submit(session: subprocess.Popen, text: str, ref: str) -> None:
+    session.stdin.write(json.dumps({"type": "submit", "text": text, "ref": ref}) + "\n")
+    session.stdin.flush()
+
+
+def _cancel(session: subprocess.Popen, turn_id: str, ref: str) -> None:
+    session.stdin.write(json.dumps({"type": "cancel", "turn": turn_id, "ref": ref}) + "\n")
+    session.stdin.flush()
+
+
+def _own_turn_binds_after(reader: Reader, session: subprocess.Popen, after: int) -> None:
+    """Submit `AFTER_PROMPT` and check it runs as its own user turn.
+
+    The check that matters after any cancel: a composer left holding the
+    cancelled prompt would have this one appended to it, submitted as one,
+    and reported as an *unowned* turn while the client's id sat unmatched.
+    """
+    _submit(session, AFTER_PROMPT, "after")
+    messages = reader.wait_for(
+        lambda ms: any(
+            m["type"] == "turn_end" and m["seq"] > after and m["outcome"] == "success"
+            for m in ms
+        ),
+        90.0,
+    )
+    ack = next(m for m in messages if m.get("ref") == "after")
+    assert ack["type"] == "ack"
+    starts = [m for m in messages if m["type"] == "turn_start" and m["seq"] > after]
+    assert [s["turn"] for s in starts] == [ack["turn"]], summarise(messages)
+    assert ack["turn"]["kind"] == "user"
+    assert drained(messages)
+
+
+def test_a_turn_cancelled_mid_tool_ends_on_the_inners_interruption_entry(session):
+    """SPEC criterion 8 (b): the transcript shape. The inner declines the
+    tool, writes `[Request interrupted by user for tool use]`, and the turn
+    ends as cancelled — while a background task would run on untouched."""
+    reader = Reader(session)
+    _submit(session, LONG_TOOL_PROMPT, "c1")
+    messages = reader.wait_for(
+        lambda ms: any(m["type"] == "tool_use" and m["tool"] == "Bash" for m in ms), 90.0
+    )
+    turn_id = next(m for m in messages if m.get("ref") == "c1")["turn"]["id"]
+    time.sleep(2.0)
+    _cancel(session, turn_id, "x1")
+
+    messages = reader.wait_for(lambda ms: any(m["type"] == "turn_end" for m in ms), 60.0)
+    print(summarise(messages))
+    ack = next(m for m in messages if m.get("ref") == "x1")
+    assert ack["type"] == "ack" and ack["turn"]["id"] == turn_id
+    end = [m for m in messages if m["type"] == "turn_end"][0]
+    assert end["turn"]["id"] == turn_id
+    assert (end["basis"], end["outcome"]) == ("marker:interrupted", "cancelled")
+    declined = [
+        m for m in messages
+        if m["type"] == "tool_result" and "doesn't want to proceed" in str(m["content"])
+    ]
+    assert declined and declined[0]["turn"]["id"] == turn_id
+    assert end["outstanding"]["user"] == 0
+
+    _own_turn_binds_after(reader, session, end["seq"])
+    session.stdin.close()
+    assert session.wait(timeout=60) == 0
+
+
+def test_a_turn_cancelled_before_any_answer_is_handed_back_and_cleared(session):
+    """SPEC criterion 8 (c): the silent shape. Cancelled right after it
+    starts, the inner hands the prompt back to the composer and writes
+    nothing; the proxy ends the turn on that evidence, clears the composer,
+    and the next prompt is its own turn. Timing-dependent by nature — if the
+    model had already produced something, the inner takes the transcript
+    shape instead — so either cancelled ending passes, and only a third
+    shape fails."""
+    reader = Reader(session)
+    _submit(session, THINK_FIRST_PROMPT, "c1")
+    messages = reader.wait_for(lambda ms: any(m["type"] == "turn_start" for m in ms), 90.0)
+    turn_id = next(m for m in messages if m.get("ref") == "c1")["turn"]["id"]
+    _cancel(session, turn_id, "x1")
+
+    messages = reader.wait_for(lambda ms: any(m["type"] == "turn_end" for m in ms), 60.0)
+    print(summarise(messages))
+    end = [m for m in messages if m["type"] == "turn_end"][0]
+    assert end["turn"]["id"] == turn_id
+    assert end["outcome"] == "cancelled"
+    assert end["basis"] in {"cancel:restored", "marker:interrupted"}, end["basis"]
+
+    _own_turn_binds_after(reader, session, end["seq"])
     session.stdin.close()
     assert session.wait(timeout=60) == 0
 

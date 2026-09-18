@@ -84,6 +84,25 @@ def tool_result(tool_use_id: str, content: str) -> dict:
     }
 
 
+def interruption(for_tool_use: bool = False) -> dict:
+    """The `user` entry the inner writes when `Esc` stops a turn that had
+    produced something. With `for_tool_use`, the form that follows a declined
+    tool — see `declined_tool`."""
+    text = "[Request interrupted by user for tool use]" if for_tool_use else "[Request interrupted by user]"
+    return {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+
+
+def declined_tool(tool_use_id: str) -> dict:
+    """The `tool_result` the inner writes for the tool an `Esc` aborted."""
+    return tool_result(
+        tool_use_id,
+        "The user doesn't want to proceed with this tool use. The tool use was "
+        "rejected (eg. if it was a file edit, the new_string was NOT written to "
+        "the file). STOP what you are doing and wait for the user to tell you "
+        "how to proceed.",
+    )
+
+
 def background_launch(tool_use_id: str, task_id: str) -> dict:
     return tool_result(
         tool_use_id,
@@ -152,8 +171,27 @@ class Clock:
 
 
 class Screen:
-    def __init__(self, footer: str) -> None:
-        self.display = [HRULE, "❯ Try \"fix the bug\"", HRULE, footer] + [""] * 36
+    """A frame with the input panel; `composer` is what the ❯ row(s) show.
+
+    Empty means the inner's dimmed placeholder. Text means what a cancelled
+    prompt looks like when the inner hands it back: on the ❯ row, wrapped
+    onto indented continuation rows past 78 columns.
+    """
+
+    def __init__(self, footer: str, composer: str = "") -> None:
+        if not composer:
+            rows = ["❯ Try \"fix the bug\""]
+        else:
+            words, rows, line = composer.split(), [], "❯"
+            for word in words:
+                if len(line) + 1 + len(word) > 78:
+                    rows.append(line)
+                    line = "  " + word
+                else:
+                    line += " " + word
+            rows.append(line)
+        self.display = [HRULE, *rows, HRULE, footer]
+        self.display += [""] * (40 - len(self.display))
 
 
 class ProcessTree:
@@ -223,6 +261,13 @@ class Session:
         self._read = 0
         self.typed: list[str] = []
         self.footer_idle = True
+        # What the inner has put in the composer, as `Screen` renders it. A
+        # test sets it to a cancelled prompt's text to play the inner handing
+        # the prompt back; the clear keys empty it.
+        self.composer = ""
+        # Every key sequence the proxy sent that was not a prompt: the cancel
+        # `Esc`, the composer clear.
+        self.keys: list[tuple[bytes, ...]] = []
         # A background task's output file, in memory: tests set
         # `session.task_outputs[path] = "..."` before the task_end that reads it.
         self.task_outputs: dict[str, str] = {}
@@ -244,6 +289,8 @@ class Session:
             activity=self.activity,
             reaper=reaper,
             kill_orphans=kill_orphans,
+            send_keys=self._send_keys,
+            clock=self.clock,
         )
         self.proxy.announce_ready("session-under-test")
         # Two frames, because the inner is not considered ready for input until
@@ -303,6 +350,26 @@ class Session:
         entries, self._entries = self._entries, []
         return entries
 
+    def _send_keys(self, keys) -> None:
+        keys = tuple(keys)
+        self.keys.append(keys)
+        # The inner's "Esc again to clear": two Escapes empty a composer that
+        # holds text. It is the only key sequence the scripted inner reacts
+        # to; a lone Esc is the interrupt, and what follows it is for the
+        # test to script.
+        if keys == (b"\x1b", b"\x1b") and self.composer:
+            self.composer = ""
+
+    def cancel(self, turn_id: str, ref: object = None) -> dict:
+        """Send a `cancel` and return the message that answered it."""
+        command = {"type": "cancel", "turn": turn_id}
+        if ref is not None:
+            command["ref"] = ref
+        self.send(command)
+        return self.messages()[-1] if ref is None else next(
+            m for m in reversed(self.messages()) if m.get("ref") == ref
+        )
+
     # -- the loop ------------------------------------------------------
 
     def tick(self, advance: float = 0.0, pty_quiet: bool = False) -> None:
@@ -315,12 +382,15 @@ class Session:
         self.clock.advance(advance)
         if not pty_quiet:
             self.activity["last_pty"] = self.clock.now
-        self.proxy.on_commit(Screen(IDLE_FOOTER if self.footer_idle else ACTIVE_FOOTER))
+        self.proxy.on_commit(
+            Screen(IDLE_FOOTER if self.footer_idle else ACTIVE_FOOTER, self.composer)
+        )
         self.proxy.on_iteration()
         if self._payloads and self.proxy.is_ready_to_send():
             payload = self._payloads.pop(0)
-            self.typed.append(payload["message"]["content"])
-            self.proxy.on_typed(payload)
+            # The io loop's veto: a withdrawn turn's payload types nothing.
+            if self.proxy.on_typed(payload) is not False:
+                self.typed.append(payload["message"]["content"])
 
     def run(self, ticks: int = 4, advance: float = 0.0, pty_quiet: bool = False) -> None:
         for _ in range(ticks):

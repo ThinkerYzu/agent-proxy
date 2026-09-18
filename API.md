@@ -69,6 +69,7 @@ Two things worth knowing:
 | `AGENTPROXY_FALLBACK_STALL_S` | `1800` | the ceiling — transcript quiet this long ends a turn regardless |
 | `AGENTPROXY_FALLBACK_UNMATCHED_S` | `60` | a typed prompt unrecognised this long, with nothing running, ends |
 | `AGENTPROXY_SETTLE_QUIESCENCE_S` | `0.5` | how long to wait after the first idle frame before typing |
+| `AGENTPROXY_DIALOG_ANSWER_DELAY_S` | `0.15` | pause before each key the proxy types that is not a prompt: a dialog answer, a `cancel`'s `Esc`, the composer clear |
 | `AGENTPROXY_KILL_ORPHANS` | unset | `1` kills adopted orphan processes when the proxy exits (SIGTERM, 2 s, SIGKILL); unset leaves them running and reports them `abandoned` — see [Orphaned processes](#orphaned-processes) |
 | `CLAUDEJSON_SEND_QUIESCENCE_S` | `0.7` | pty quiet required before keystrokes go out (inherited name) |
 | `CLAUDEJSON_RESUBMIT_QUIESCENCE_S` | `1.5` | pty quiet required before re-sending a submit CR (inherited name) |
@@ -145,20 +146,23 @@ aggregate — use whichever suits.
 
 ## Commands
 
-Write one JSON object per line to stdin and flush. Two are understood:
+Write one JSON object per line to stdin and flush. Three are understood:
 
 ```json
 {"type": "submit", "text": "what does load_timeout_id do?", "ref": "c-17"}
 {"type": "status", "ref": "c-18"}
+{"type": "cancel", "turn": "t-6", "ref": "c-19"}
 ```
 
 `submit` is answered by an `ack` before anything reaches the inner `claude` —
 it never waits on the pty. `text` must be a non-empty string. `status` is
-answered by a `state` message, also without touching the keyboard.
+answered by a `state` message, also without touching the keyboard. `cancel`
+names a turn by the id its `ack` carried and is answered by an `ack` naming
+that same turn — see [Cancelling a turn](#cancelling-a-turn).
 
-A line that is not JSON, not an object, has an unknown `type`, or is a
-`submit` with no usable `text`, produces an `error` message and nothing else.
-The session continues.
+A line that is not JSON, not an object, has an unknown `type`, is a `submit`
+with no usable `text`, or a `cancel` naming a turn that cannot be cancelled,
+produces an `error` message and nothing else. The session continues.
 
 ### Correlating a command with its answer
 
@@ -191,15 +195,60 @@ on a turn belonging to the third. Every later prompt is off by one, silently.
 A command that arrives as an unparseable line has no `ref` the proxy can read,
 so that one `error` is unattributable by construction. Everything else is.
 
-There is no cancellation. An acknowledged prompt always runs: no withdraw for
-a queued turn, no interrupt for a running one.
+### Cancelling a turn
+
+`cancel` takes the turn back, as far as that is possible, and reports what
+actually happened rather than what was asked:
+
+| The turn is | What the proxy does | How it ends |
+|---|---|---|
+| queued, not yet typed | drops it from the queue | at once, in the same batch as the `ack`: `basis: "cancel:withdrawn"`, `outcome: "cancelled"` |
+| running | sends one `Esc` to the inner, as a person at the keyboard would | when the inner is *seen* to stop — see below |
+| typed but not yet in the transcript | holds the request and sends the `Esc` the moment the turn binds | as running |
+| already ended, unknown, or an unowned turn | nothing: `error` | — |
+
+A running turn stops in one of two shapes, and which one is the inner's
+choice, not the proxy's:
+
+- **The inner writes an interruption entry.** When the model had already
+  produced anything, the transcript gets a `[Request interrupted by user]`
+  entry — preceded, if a tool was being run, by a `tool_result` declining it
+  ("The user doesn't want to proceed with this tool use…") that belongs to
+  the turn. The turn ends `basis: "marker:interrupted"`, `outcome:
+  "cancelled"`. Aborting a tool can take the inner several seconds; the
+  `turn_end` waits for it.
+- **The inner hands the prompt back.** When the model had produced nothing
+  yet, the inner treats the `Esc` as an un-send: it writes nothing and puts
+  the prompt back in its composer for editing. The proxy recognises its own
+  prompt sitting there on an idle frame, ends the turn `basis:
+  "cancel:restored"`, `outcome: "cancelled"`, and clears the composer before
+  it types anything else — a prompt typed on top of the leftover text would
+  be submitted as one with it.
+
+What a client may rely on:
+
+1. The `ack` means the request was taken, not that the turn is over. Wait on
+   the `turn_end` for that id, as for any turn; it carries the `ref`-less
+   ending, the `ack` carries the `ref`.
+2. `outcome: "cancelled"` appears only on a `turn_end` whose `basis` is one of
+   the three above. An `Esc` the inner did not act on — it happens; a single
+   byte on a busy pty — ends the turn however it really ends, with
+   `outcome: "success"` and the real `basis`, and a second `cancel` for the
+   same turn is acknowledged but sends nothing more.
+3. Only the named turn is affected. Prompts queued behind it still run;
+   cancel each id you want gone. Background tasks are untouched — `Esc`
+   does not stop them, and a task the cancelled turn launched runs to its
+   `task_end` and may wake an unowned turn afterwards, exactly as it would
+   have.
+4. Unowned turns cannot be cancelled. The handed-back shape is recognised by
+   the text the proxy typed, which an unowned turn does not have.
 
 ## Message types
 
 | `type` | When | Fields beyond the envelope |
 |---|---|---|
 | `ready` | first message of the session, always `seq` 1 | `session_id` — always a real id, see [Sessions](#sessions) |
-| `ack` | a `submit` was accepted | `ref` if the command carried one (`turn` carries the new id) |
+| `ack` | a `submit` or a `cancel` was accepted | `ref` if the command carried one (`turn` carries the new id, or the id being cancelled) |
 | `turn_start` | a turn began running | `caused_by` when a background task woke it |
 | `text` | assistant prose | `text` |
 | `thinking` | assistant reasoning | `text` |
@@ -217,8 +266,10 @@ Notes on the fields that carry weight:
 
 - **`turn_end.basis`** says how the end was decided — see [End of
   turn](#end-of-turn).
-- **`turn_end.outcome`** is `success` or `error`. `error` means the turn was
-  closed by the failure path, not that the agent's answer was wrong.
+- **`turn_end.outcome`** is `success`, `error` or `cancelled`. `error` means
+  the turn was closed by the failure path, not that the agent's answer was
+  wrong; `cancelled` means a `cancel` took effect — see [Cancelling a
+  turn](#cancelling-a-turn).
 - **`turn_end.usage`** holds `duration_ms` (only from a marker that carried
   one) and `output_tokens` (only when non-zero). It can be `{}`.
 - **`task_end.status`** is `completed`, `failed`, `killed` or `stopped` — how
@@ -368,6 +419,9 @@ tier 2 is the fallback that makes "a turn hangs forever" impossible.
 |---|---|---|
 | `marker:turn_duration` | 1 | the ordinary end-of-turn marker |
 | `marker:compact_boundary` | 1 | `/compact` completed |
+| `marker:interrupted` | 1 | the inner wrote its interruption entry after a `cancel`'s `Esc` |
+| `cancel:restored` | — | after a `cancel`'s `Esc`, the inner handed the prompt back to its composer and wrote nothing |
+| `cancel:withdrawn` | — | a `cancel` dropped the turn from the queue before it was typed |
 | `fallback:idle` | 2 | TUI footer idle and transcript quiet for `AGENTPROXY_FALLBACK_IDLE_S` |
 | `fallback:quiet` | 2 | pty silent and transcript quiet for `AGENTPROXY_FALLBACK_QUIET_S`, whatever the footer says |
 | `fallback:stalled` | 2 | transcript quiet for `AGENTPROXY_FALLBACK_STALL_S`, nothing else considered |
@@ -477,5 +531,5 @@ for a client:
 
 - **Ignore unknown message types and unknown fields.** New types are added
   when `claude` grows a shape worth reporting; the envelope does not change.
-- **`basis` values are open.** Match on the `marker:` / `fallback:` prefix
-  rather than on the full set.
+- **`basis` values are open.** Match on the `marker:` / `fallback:` /
+  `cancel:` prefix rather than on the full set.

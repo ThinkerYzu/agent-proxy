@@ -153,6 +153,15 @@ def serve(
     # The inner is a direct child too, but `PtyDriver` waits on it itself.
     reaper = None if subreaper_problem else OrphanReaper(exclude=(driver.pid,))
 
+    def _send_keys(keys: Sequence[bytes]) -> None:
+        # A cancel's `Esc`, and the `Esc` `Esc` that clears a handed-back
+        # prompt: paced like a dialog answer, for the same repaint race, and
+        # the second `Esc` must follow the first inside the inner's "Esc
+        # again to clear" window, which 150ms is well within.
+        for key in keys:
+            time.sleep(DIALOG_ANSWER_DELAY_S)
+            driver.write(key)
+
     def _answer_dialog(prompt: str, keys: Sequence[bytes]) -> None:
         # `keys` is computed per frame by `Liveness` from where the wanted
         # option actually sits on screen, not a fixed guess — see its
@@ -191,6 +200,7 @@ def serve(
         activity=activity,
         reaper=reaper,
         kill_orphans=KILL_ORPHANS,
+        send_keys=_send_keys,
     )
 
     # `on_query` answers the inner's terminal-capability probes (DA1,

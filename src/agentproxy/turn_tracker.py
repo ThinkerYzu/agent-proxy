@@ -58,8 +58,32 @@ TERMINAL_STATUSES = frozenset({"completed", "failed", "killed", "stopped"})
 
 OUTCOME_SUCCESS = "success"
 OUTCOME_ERROR = "error"
+OUTCOME_CANCELLED = "cancelled"
 
 BASIS_ERROR = "error"
+
+# The three ways a cancelled turn is seen to end. Each is evidence, not the
+# client's request: the request only ever sends one `Esc`, and the turn ends
+# when the inner is seen to have stopped — in the transcript when it writes
+# an interruption entry, on the screen when it hands the prompt back instead.
+BASIS_INTERRUPTED = "marker:interrupted"
+BASIS_RESTORED = "cancel:restored"
+BASIS_WITHDRAWN = "cancel:withdrawn"
+
+# What the inner writes, as the text of a `user` entry, when `Esc` interrupts
+# a turn that had already produced something. The second form follows a
+# `tool_result` declining the aborted tool. A `user` entry rather than a
+# `system` one, so it is matched on content the way a launch wording is; an
+# interrupt that lands before the model has produced anything writes neither
+# — the prompt is handed back to the composer and the transcript stays silent.
+INTERRUPTION_TEXTS = frozenset(
+    {"[Request interrupted by user]", "[Request interrupted by user for tool use]"}
+)
+
+# What `cancel` decided to do, by the turn's state.
+CANCEL_WITHDRAWN = "withdrawn"
+CANCEL_INTERRUPT = "interrupt"
+CANCEL_HELD = "held"
 
 # Transcript markers that end a turn, mapped to the `basis` they report.
 # Extensible by design: `compact_boundary` was found only by surveying 412
@@ -100,6 +124,10 @@ _EXIT_CODE_RE = re.compile(r"exit code (-?\d+)")
 _STOP_RE = re.compile(r"[Ss]uccessfully stopped task:?\s+([A-Za-z0-9_-]+)")
 
 
+class CancelError(Exception):
+    """A `cancel` the tracker will not act on; the message is the reason."""
+
+
 @dataclass
 class Turn:
     """One unit of inner-`claude` work, from submission or wake-up to EOT."""
@@ -112,6 +140,12 @@ class Turn:
     basis: Optional[str] = None
     outcome: Optional[str] = None
     output_tokens: int = 0
+    # A client asked for this turn to be cancelled; `Proxy` sends the `Esc`
+    # once the turn is running and records that it did in `interrupt_sent`,
+    # so a turn cancelled while still being typed is interrupted the moment
+    # it binds, and never twice.
+    cancel_requested: bool = False
+    interrupt_sent: bool = False
 
     def ref(self) -> dict:
         """The `turn` field every message belonging to this turn carries."""
@@ -258,6 +292,55 @@ class TurnTracker:
             return []
         return self._end_turn(self._typed_turn, basis, outcome)
 
+    def cancel(self, turn_id: str) -> tuple[str, list[dict]]:
+        """Act on a client's `cancel` by what state the turn is in.
+
+        Returns the action taken and the events it produced. A queued turn is
+        ended here and now (`CANCEL_WITHDRAWN`); the caller must also drop it
+        from the submit queue, which this tracker does not hold. A running
+        turn is marked (`CANCEL_INTERRUPT`) and the caller sends the `Esc`. A
+        turn typed but not yet seen in the transcript is marked too and the
+        interrupt waits for it to bind (`CANCEL_HELD`) — it is at most the
+        typing latency away from running, and an `Esc` before then would land
+        on an idle composer instead. Raises `CancelError` for a turn that
+        cannot be cancelled: unknown, already ended, or unowned — the last
+        because a restored prompt is recognised by the text the proxy typed,
+        which an unowned turn does not have.
+        """
+        turn = self._turns.get(turn_id)
+        if turn is None:
+            raise CancelError(f"no turn {turn_id!r}")
+        if turn.kind != KIND_USER:
+            raise CancelError(f"{turn_id} is an unowned turn; only user turns can be cancelled")
+        if turn.state == STATE_ENDED:
+            raise CancelError(f"{turn_id} has already ended")
+        if turn.cancel_requested:
+            # Already asked. Say so rather than send a second `Esc`: on the
+            # empty composer the inner leaves after an interrupt, a second
+            # `Esc` is the first half of the gesture that opens the rewind
+            # picker, a dialog the proxy has no rule for.
+            return CANCEL_HELD, []
+        turn.cancel_requested = True
+        if turn is self._typed_turn:
+            return CANCEL_HELD, []
+        if turn.state == STATE_RUNNING:
+            return CANCEL_INTERRUPT, []
+        return CANCEL_WITHDRAWN, self._end_turn(turn, BASIS_WITHDRAWN, OUTCOME_CANCELLED)
+
+    def end_restored_turn(self) -> list[dict]:
+        """End the cancelled running turn whose prompt the inner handed back.
+
+        The other ending a cancel can have, and the one the transcript never
+        shows: `Esc` before the model has produced anything is treated by the
+        inner as an un-send, the prompt goes back into the composer, and no
+        entry is written. `Proxy` calls this when it sees that prompt on the
+        composer row of an idle frame; nothing here reads a screen.
+        """
+        turn = self._running_turn
+        if turn is None or not turn.cancel_requested:
+            return []
+        return self._end_turn(turn, BASIS_RESTORED, OUTCOME_CANCELLED)
+
     # ------------------------------------------------------------------
     # Transcript side
     # ------------------------------------------------------------------
@@ -378,6 +461,8 @@ class TurnTracker:
 
     def _on_user(self, entry: dict) -> list[dict]:
         content = entry.get("message", {}).get("content")
+        if _is_interruption(content):
+            return self._on_interruption()
         events = self._absorb_notification(_flatten_text(content))
         if isinstance(content, str):
             if self._running_turn is None:
@@ -407,6 +492,28 @@ class TurnTracker:
                 }
             )
         return events
+
+    def _on_interruption(self) -> list[dict]:
+        """End the running turn on the inner's own interruption entry.
+
+        Tier 1, like `turn_duration`: the entry is written by the inner when
+        an `Esc` stops a turn that had produced something, and nothing else
+        writes it. It ends the turn whether or not this proxy asked — the
+        proxy is the only thing typing, so an unrequested one is worth a log
+        line, not a different outcome. Opens nothing: the entry is the shape
+        of a prompt (a `user` entry) but it is the end of a turn, not the
+        start of one, and a candidate it confirmed would be a phantom. An
+        older inner may follow it with a `turn_duration`, which then finds no
+        turn running and is ignored like any late marker.
+        """
+        self._discard_candidate("interrupted before the model was seen working")
+        turn = self._running_turn
+        if turn is None:
+            log.log_text("tracker", f"{BASIS_INTERRUPTED} with no turn running")
+            return []
+        if not turn.cancel_requested:
+            log.log_text("tracker", f"{turn.id} interrupted, but not by this proxy")
+        return self._end_turn(turn, BASIS_INTERRUPTED, OUTCOME_CANCELLED)
 
     def _on_assistant(self, entry: dict) -> list[dict]:
         events = self._confirm_candidate()
@@ -741,6 +848,21 @@ def _normalise(text: str) -> str:
     keeps is stripped from the transcript entry too, and the two still match.
     """
     return " ".join(text.split()).rstrip("\\")
+
+
+def _is_interruption(content: object) -> bool:
+    """True for the `user` entry the inner writes when `Esc` stops a turn.
+
+    Its content is a list holding one text block, never a plain string —
+    which is what keeps it apart from a prompt of the same words, should a
+    client ever send one.
+    """
+    if not isinstance(content, list) or not content:
+        return False
+    if not all(isinstance(b, dict) and b.get("type") == "text" for b in content):
+        return False
+    text = "".join(b.get("text", "") for b in content).strip()
+    return text in INTERRUPTION_TEXTS
 
 
 def _flatten_text(content: object) -> str:

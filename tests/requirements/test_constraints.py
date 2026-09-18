@@ -2,15 +2,15 @@
 
 Requirements say what the proxy must do; these say what it must not become.
 Most are one-line properties that nothing else would notice breaking — a
-dependency creeping in, a cancellation command appearing, a content rule
-sneaking into turn classification.
+dependency creeping in, a cancel that ends a turn nobody saw stop, a content
+rule sneaking into turn classification.
 
 | Item | Test |
 |---|---|
 | Constraint 5 / NFR 2 — no new dependencies, Python 3.11+ | `test_constraint_5_*`, `test_nfr_2_*` |
 | Constraint 7 — stdio, ordered, no request/response | `test_constraint_7_*` |
 | R3 — an unowned turn is one the proxy did not prompt | `test_r3_*` |
-| R7 — no client-initiated cancellation | `test_r7_*` |
+| R11 — cancellation is a request the proxy makes and an ending it observes | `test_r11_*` |
 | NFR 3 — counters are self-correcting | `test_nfr_3_*` |
 
 """
@@ -27,7 +27,9 @@ import pytest
 from tests.harness import (
     Session,
     assistant_text,
+    assistant_thinking,
     assistant_tool_use,
+    interruption,
     background_launch,
     marker,
     notification,
@@ -111,7 +113,11 @@ def test_constraint_7_a_command_is_answered_on_the_stream_not_by_a_return_value(
     assert session.proxy.on_stdin_line('{"type": "status"}') is None
     assert session.proxy.on_stdin_line('{"type": "nonsense"}') is None
     payload = session.proxy.on_stdin_line('{"type": "submit", "text": "hello"}')
-    assert payload == {"type": "user", "message": {"role": "user", "content": "hello"}}
+    assert payload == {
+        "type": "user",
+        "message": {"role": "user", "content": "hello"},
+        "turn": "t-1",
+    }
 
     assert [m["type"] for m in session.messages()[-3:]] == ["state", "error", "ack"]
     assert [m["seq"] for m in session.messages()] == list(
@@ -179,29 +185,59 @@ def test_r3_a_prompt_shaped_entry_that_is_not_a_prompt_opens_nothing(session):
 
 
 # ----------------------------------------------------------------------
-# R7 — an acknowledged prompt always runs
+# R11 — cancellation is a request the proxy makes and an ending it observes
 # ----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("command", ["cancel", "interrupt", "withdraw", "abort"])
-def test_r7_there_is_no_command_that_takes_a_prompt_back(session, command):
-    """No withdraw for a queued turn, no interrupt for a running one.
+def test_r11_a_running_turn_is_not_ended_on_the_clients_say_so(session):
+    """The cancel sends one `Esc`; the turn ends when the inner is seen to
+    stop, not when the client asked. Until then it is still running, still
+    counted, and still the turn its messages belong to."""
+    turn_id = session.submit("start the build")
+    session.run()
+    session.footer_idle = False
+    session.writes(user_text("start the build"), assistant_thinking())
+    session.run()
+    session.cancel(turn_id)
+    assert session.keys == [(b"\x1b",)]
+    assert session.tracker.outstanding()["user"] == 1
+    assert session.of_type("turn_end") == []
 
-    Adding one later breaks no client, which is why it was left out rather
-    than designed in; what must not happen is a client believing it cancelled
-    something and the turn running anyway.
-    """
+    # The inner declines the tool it was about to run and writes its
+    # interruption entry: that is the ending, and it says so.
+    session.writes(interruption())
+    session.run()
+    end = session.of_type("turn_end")[-1]
+    assert end["turn"]["id"] == turn_id
+    assert end["basis"] == "marker:interrupted"
+    assert end["outcome"] == "cancelled"
+    assert session.tracker.outstanding()["user"] == 0
+
+
+def test_r11_an_esc_the_inner_ignored_ends_the_turn_however_it_really_ended(session):
+    """A cancel whose `Esc` did not take does not pretend: the turn runs to
+    its marker and reports `success`, visibly, rather than a cancellation
+    nobody observed."""
+    turn_id = session.submit("start the build")
+    session.run()
+    session.footer_idle = False
+    session.writes(user_text("start the build"), assistant_thinking())
+    session.run()
+    session.cancel(turn_id)
+    session.writes(assistant_text("done anyway"), marker())
+    session.footer_idle = True
+    session.run()
+    end = session.of_type("turn_end")[-1]
+    assert (end["basis"], end["outcome"]) == ("marker:turn_duration", "success")
+
+
+@pytest.mark.parametrize("command", ["interrupt", "withdraw", "abort"])
+def test_r11_cancel_is_the_one_command_that_takes_a_prompt_back(session, command):
+    """Other spellings are still errors, and change nothing."""
     turn_id = session.submit("start the build")
     session.send({"type": command, "turn": turn_id})
     assert session.messages()[-1]["type"] == "error"
     assert session.tracker.outstanding()["user"] == 1
-
-    session.run()
-    session.footer_idle = False
-    session.answers("start the build")
-    session.footer_idle = True
-    session.run()
-    assert [m["turn"]["id"] for m in session.of_type("turn_end")] == [turn_id]
 
 
 # ----------------------------------------------------------------------

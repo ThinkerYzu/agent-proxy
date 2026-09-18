@@ -115,3 +115,55 @@ def test_a_last_line_with_no_newline_is_not_dropped():
     """Nothing guarantees a client's final write ends in a newline."""
     lines = drive(b'{"type":"status"}', expected=1, close_stdin=True)
     assert lines == ['{"type":"status"}']
+
+
+# ----------------------------------------------------------------------
+# The send veto — a withdrawn turn's payload types nothing
+# ----------------------------------------------------------------------
+
+
+class RecordingPty(SilentPty):
+    def __init__(self) -> None:
+        super().__init__()
+        self.written: list[bytes] = []
+
+    def write(self, data: bytes) -> int:
+        self.written.append(data)
+        return len(data)
+
+
+def test_a_message_the_callback_vetoes_is_dropped_before_the_paste():
+    """`on_user_message` answering False is a `cancel` that withdrew the
+    turn while its payload waited: nothing reaches the pty, and the loop
+    moves on to the next message rather than stalling on the dropped one."""
+    read_fd, write_fd = os.pipe()
+    os.write(
+        write_fd,
+        b'{"type":"user","message":{"role":"user","content":"withdrawn"}}\n'
+        b'{"type":"user","message":{"role":"user","content":"kept"}}\n',
+    )
+    driver = RecordingPty()
+    sent: list[str] = []
+
+    def veto_withdrawn(msg: dict) -> Optional[bool]:
+        text = msg["message"]["content"]
+        sent.append(text)
+        return False if text == "withdrawn" else None
+
+    with open(read_fd, "rb") as stdin:
+        try:
+            run(
+                driver,
+                DeafScreen(),
+                stdin=stdin,
+                on_user_message=veto_withdrawn,
+                stop_when=lambda: "kept" in sent,
+                max_duration=3.0,
+                idle_timeout_when=lambda: True,
+            )
+        finally:
+            os.close(write_fd)
+            driver.close()
+    assert sent == ["withdrawn", "kept"]
+    assert not any(b"withdrawn" in chunk for chunk in driver.written)
+    assert any(b"kept" in chunk for chunk in driver.written)

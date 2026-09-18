@@ -1,4 +1,4 @@
-"""The thirteen functional requirements of the SPEC, one test group each.
+"""The fourteen functional requirements of the SPEC, one test group each.
 
 These are traceability tests: each one names the requirement it stands for and
 asserts what that requirement promises a client, on the protocol's own terms —
@@ -22,6 +22,7 @@ asserts the requirement over a whole session instead of repeating the unit.
 | 11 — no turn may hang without an end-of-turn | `test_requirement_11_*` (four tests) |
 | 12 — session identity stated first, and always | `test_requirement_12_*` (three tests) |
 | 13 — orphaned processes are counted | `test_requirement_13_*` (five tests) |
+| 14 — a client can cancel a turn it was given an id for | `test_requirement_14_*` (seven tests) |
 
 """
 
@@ -43,6 +44,8 @@ from tests.harness import (
     assistant_thinking,
     assistant_tool_use,
     background_launch,
+    declined_tool,
+    interruption,
     marker,
     notification,
     queue_operation,
@@ -1005,3 +1008,176 @@ def test_requirement_13_without_the_flag_there_is_no_count_at_all(session):
     session.send({"type": "status"})
     assert "orphan" not in session.messages()[-1]["outstanding"]
     assert "orphans" not in session.of_type("state")[-1]
+
+
+# ----------------------------------------------------------------------
+# Requirement 14 — a client can cancel a turn it was given an id for
+# ----------------------------------------------------------------------
+
+
+def test_requirement_14_a_queued_turn_is_withdrawn_and_never_typed(session):
+    """Cancelled while waiting behind a running turn: it ends at once, in the
+    batch with the ack, and the keyboard never sees it."""
+    first = session.submit("first")
+    session.run()
+    session.footer_idle = False
+    session.writes(user_text("first"), assistant_thinking())
+    session.run()
+    second = session.submit("second")
+    answer = session.cancel(second, ref="c-9")
+    assert answer["type"] == "ack" and answer["turn"]["id"] == second
+    end = session.messages()[-1]
+    assert end["type"] == "turn_end" and end["turn"]["id"] == second
+    assert (end["basis"], end["outcome"]) == ("cancel:withdrawn", "cancelled")
+    assert "ref" not in end
+    assert session.messages()[-1]["outstanding"]["user"] == 1  # `first`, still running
+
+    session.writes(assistant_text(), marker())
+    session.footer_idle = True
+    session.run()
+    assert session.typed == ["first"]
+    assert session.keys == []
+    assert session.tracker.outstanding()["user"] == 0
+
+
+def test_requirement_14_a_running_turn_gets_one_esc_and_ends_on_the_interruption(session):
+    turn_id = session.submit("start the build")
+    session.run()
+    session.footer_idle = False
+    session.writes(user_text("start the build"), assistant_tool_use("toolu_1", "build"))
+    session.run()
+    session.cancel(turn_id)
+    session.cancel(turn_id)  # a second ask changes nothing
+    assert session.keys == [(b"\x1b",)]
+
+    session.writes(declined_tool("toolu_1"), interruption(for_tool_use=True))
+    session.footer_idle = True
+    session.run()
+    types = [m["type"] for m in session.new_messages()]
+    assert types[-2:] == ["tool_result", "turn_end"]
+    end = session.of_type("turn_end")[-1]
+    assert end["turn"]["id"] == turn_id
+    assert (end["basis"], end["outcome"]) == ("marker:interrupted", "cancelled")
+    assert not any(session.tracker.outstanding().values())
+
+
+def test_requirement_14_a_handed_back_prompt_ends_the_turn_and_is_cleared(session):
+    """The silent ending: no entry, the prompt back in the composer. The
+    turn ends on that evidence, and nothing is typed until it is gone."""
+    prompt = "Write a 1500 word essay about the history of the pty in Unix."
+    turn_id = session.submit(prompt)
+    session.run()
+    session.footer_idle = False
+    session.writes(user_text(prompt))
+    session.run()
+    session.cancel(turn_id)
+    assert session.keys == [(b"\x1b",)]
+    following = session.submit("Reply with exactly: AFTER")
+
+    # The inner goes idle with the prompt on the composer row.
+    session.footer_idle = True
+    session.composer = prompt
+    session.tick()
+    end = session.of_type("turn_end")[-1]
+    assert end["turn"]["id"] == turn_id
+    assert (end["basis"], end["outcome"]) == ("cancel:restored", "cancelled")
+    # Cleared with the inner's own gesture, before anything else is typed.
+    assert session.keys == [(b"\x1b",), (b"\x1b", b"\x1b")]
+    assert session.typed == [prompt]
+    session.run(advance=0.7)
+    assert session.typed == [prompt, "Reply with exactly: AFTER"]
+    session.writes(user_text("Reply with exactly: AFTER"), assistant_text("AFTER"), marker())
+    session.run()
+    start = session.of_type("turn_start")[-1]
+    assert start["turn"] == {"id": following, "kind": "user"}
+
+
+def test_requirement_14_the_clear_is_never_sent_into_an_empty_composer(session):
+    """The same two keys on an empty composer open the rewind picker, so a
+    frame that no longer shows the text sends nothing more — including the
+    tick right after the clear, whose frame may predate the repaint."""
+    prompt = "Write an essay."
+    turn_id = session.submit(prompt)
+    session.run()
+    session.footer_idle = False
+    session.writes(user_text(prompt))
+    session.run()
+    session.cancel(turn_id)
+    session.footer_idle = True
+    session.composer = prompt
+    session.tick()
+    assert session.keys[-1] == (b"\x1b", b"\x1b")
+    # Play an inner that has emptied the composer but not yet repainted.
+    session.composer = prompt
+    session.tick(advance=0.1)
+    session.composer = ""
+    session.run(advance=0.3)
+    assert session.keys.count((b"\x1b", b"\x1b")) == 1
+
+
+def test_requirement_14_a_composer_that_will_not_clear_reopens_the_gate_loudly(session, monkeypatch):
+    logged: list[str] = []
+    monkeypatch.setattr("agentproxy.proxy.log.log_text", lambda ch, t: logged.append(t))
+    prompt = "Write an essay."
+    turn_id = session.submit(prompt)
+    session.run()
+    session.footer_idle = False
+    session.writes(user_text(prompt))
+    session.run()
+    session.cancel(turn_id)
+    session.footer_idle = True
+    # An inner that ignores the clear: the text stays put whatever is sent.
+    session._send_keys = lambda keys: session.keys.append(tuple(keys))
+    session.proxy._send_keys = session._send_keys
+    session.composer = prompt
+    for _ in range(6):
+        session.tick(advance=0.7)
+    assert session.keys.count((b"\x1b", b"\x1b")) == 3
+    assert session.proxy.is_ready_to_send()
+    assert any("will not clear" in line for line in logged)
+
+
+def test_requirement_14_a_cancel_typed_but_not_yet_bound_is_held_then_acted_on(session):
+    """Between the keystrokes going out and the transcript showing the prompt
+    the turn is neither queued nor running. The `Esc` waits for it to bind."""
+    turn_id = session.submit("hello")
+    session.run()
+    assert session.typed == ["hello"]
+    answer = session.cancel(turn_id)
+    assert answer["type"] == "ack"
+    assert session.keys == []
+    session.footer_idle = False
+    session.writes(user_text("hello"))
+    session.run()
+    assert session.keys == [(b"\x1b",)]
+
+
+@pytest.mark.parametrize(
+    "command, reason",
+    [
+        ({"type": "cancel"}, "needs a 'turn'"),
+        ({"type": "cancel", "turn": "t-99"}, "no turn"),
+        ({"type": "cancel", "turn": "t-1"}, "already ended"),
+    ],
+)
+def test_requirement_14_a_cancel_with_nothing_to_act_on_is_an_error(session, command, reason):
+    session.submit("hello")
+    session.run()
+    session.answers("hello")
+    session.run()
+    session.send({**command, "ref": "c-1"})
+    answer = session.messages()[-1]
+    assert answer["type"] == "error" and answer["ref"] == "c-1"
+    assert reason in answer["error"]
+    assert session.keys == []
+
+
+def test_requirement_14_an_unowned_turn_is_refused(session):
+    session.footer_idle = False
+    session.writes(user_text("a wake-up"), assistant_thinking())
+    session.run()
+    unowned = session.of_type("turn_start")[-1]["turn"]["id"]
+    session.send({"type": "cancel", "turn": unowned})
+    assert session.messages()[-1]["type"] == "error"
+    assert "unowned" in session.messages()[-1]["error"]
+    assert session.keys == []
