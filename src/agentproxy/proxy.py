@@ -20,6 +20,7 @@ from typing import Callable, Optional
 from agentproxy import log
 from agentproxy.fallback import BASIS_UNMATCHED, FallbackEot
 from agentproxy.liveness import Liveness
+from agentproxy.orphans import OrphanExit, OrphanReaper
 from agentproxy.protocol import Emitter
 from agentproxy.submit_queue import SubmitQueue
 from agentproxy.turn_tracker import TurnTracker
@@ -45,6 +46,16 @@ def _tagged(events: list[dict], ref: object) -> list[dict]:
     return events
 
 
+def _orphan_end(ending: OrphanExit) -> dict:
+    return {
+        "type": "orphan_end",
+        "process": ending.process.to_wire(),
+        "status": ending.status,
+        "exit_code": ending.exit_code,
+        "signal": ending.signal,
+    }
+
+
 class Proxy:
     """One inner-`claude` session, seen from the client's side of the pipe."""
 
@@ -58,6 +69,8 @@ class Proxy:
         read_entries: Callable[[], list[dict]],
         read_output: Callable[[str], Optional[str]],
         activity: dict,
+        reaper: Optional[OrphanReaper] = None,
+        kill_orphans: bool = False,
     ) -> None:
         self._tracker = tracker
         self._emitter = emitter
@@ -70,6 +83,10 @@ class Proxy:
         # reads `last_activity` for its own idle ceiling. Both clocks are
         # monotonic seconds.
         self._activity = activity
+        # None where the proxy could not become a subreaper: then no orphan is
+        # ever seen, and no `orphan` key is ever on the wire.
+        self._reaper = reaper
+        self._kill_orphans = kill_orphans
         self._stdin_closed = False
 
     # ------------------------------------------------------------------
@@ -90,15 +107,21 @@ class Proxy:
 
         Ends the running turn, everything queued behind it, and every
         background task, so nothing is left for a client to wait on. Stops
-        the proxy typing into an inner `claude` that is gone.
+        the proxy typing into an inner `claude` that is gone. Adopted orphans
+        are closed out last (abandoned, or killed when the proxy was told to),
+        so their count is zero on the final message like every other.
         """
         log.log_text("proxy", f"session failed: {reason}")
         self._queue.drain()
         self._emit(self._tracker.fail_session(reason))
+        if self._reaper is not None:
+            self._emit(
+                [_orphan_end(e) for e in self._reaper.shutdown(kill=self._kill_orphans)]
+            )
 
     @property
     def has_unfinished_work(self) -> bool:
-        return any(self._tracker.outstanding().values())
+        return any(self._emitter.outstanding().values())
 
     # ------------------------------------------------------------------
     # Client side
@@ -137,9 +160,10 @@ class Proxy:
             self._emit(_tagged(events, ref))
             return self._queue.accept(turn)
         if kind == "status":
-            self._emit(
-                _tagged([{"type": "state", **self._tracker.snapshot()}], ref)
-            )
+            state = {"type": "state", **self._tracker.snapshot()}
+            if self._reaper is not None:
+                state["orphans"] = [o.to_wire() for o in self._reaper.alive()]
+            self._emit(_tagged([state], ref))
             return None
         return self._reject(f"unknown command type: {kind!r}", ref)
 
@@ -196,11 +220,12 @@ class Proxy:
         self._fallback.note_frame(self._liveness.is_idle)
 
     def on_iteration(self) -> None:
-        """One loop tick: drain the transcript, then check the fallback tier."""
+        """One loop tick: drain the transcript, look for orphans, check the fallback tier."""
         for entry in self._read_entries():
             self._fallback.note_transcript()
             self._activity["last_activity"] = time.monotonic()
             self._emit(self._tracker.on_entry(entry))
+        self._poll_orphans()
 
         running = self._tracker.running_turn
         typed = self._tracker.typed_turn
@@ -247,6 +272,22 @@ class Proxy:
             and self._queue.is_empty
             and self._tracker.running_turn is None
             and self._tracker.typed_turn is None
+        )
+
+    def _poll_orphans(self) -> None:
+        """Report every process adopted or reaped since the last tick.
+
+        A count alone would not do: with the last orphan gone and no message
+        behind it, a client gating its composer on `any(outstanding.values())`
+        would stay gated until something unrelated was emitted. So an arrival
+        and an ending are each a message, the way a task's are.
+        """
+        if self._reaper is None:
+            return
+        arrived, ended = self._reaper.poll()
+        self._emit(
+            [{"type": "orphan_start", "process": o.to_wire()} for o in arrived]
+            + [_orphan_end(e) for e in ended]
         )
 
     # ------------------------------------------------------------------

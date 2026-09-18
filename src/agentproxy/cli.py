@@ -22,7 +22,7 @@ import time
 from datetime import datetime, timezone
 from typing import IO, Optional, Sequence
 
-from agentproxy import inner_claude, log
+from agentproxy import inner_claude, log, orphans
 from agentproxy.fallback import FallbackEot
 from agentproxy.io_loop import (
     RESUBMIT_QUIESCENCE_S,
@@ -30,6 +30,7 @@ from agentproxy.io_loop import (
     run as run_loop,
 )
 from agentproxy.liveness import Liveness
+from agentproxy.orphans import OrphanReaper
 from agentproxy.protocol import Emitter
 from agentproxy.proxy import Proxy
 from agentproxy.pty_driver import PtyDriver
@@ -45,6 +46,12 @@ from agentproxy.turn_tracker import TurnTracker
 # permanently stuck session with no retry, so this errs high rather than
 # tight. Tunable for diagnostics.
 DIALOG_ANSWER_DELAY_S = float(os.environ.get("AGENTPROXY_DIALOG_ANSWER_DELAY_S", "0.15"))
+
+# What happens to the processes the proxy adopted when it exits. Off, they
+# are left running and reported `abandoned`: the only default that cannot
+# kill a server the model detached on purpose. On, they get SIGTERM, a grace
+# period, then SIGKILL, each reported with its real ending.
+KILL_ORPHANS = os.environ.get("AGENTPROXY_KILL_ORPHANS", "").lower() in ("1", "true", "yes")
 
 # Why the loop ended, in the words the closing `error` message uses. `stop` is
 # in here for one case only: the client closed stdin while a background task
@@ -133,9 +140,18 @@ def serve(
         return 2
     tailer = _open_tailer(session_id, tail_mode, started_at)
 
+    # Before the spawn: a parent dying reparents its children to the nearest
+    # subreaper *at that moment*, so the flag has to be on already. Where it
+    # cannot be set the proxy runs as before, with no `orphan` count at all.
+    subreaper_problem = orphans.become_subreaper()
+    if subreaper_problem is not None:
+        log.log_text("proxy", f"not a subreaper, orphans uncounted: {subreaper_problem}")
+
     driver = PtyDriver(
         inner_claude.build_argv(argv), env=inner_claude.build_env(dict(os.environ))
     )
+    # The inner is a direct child too, but `PtyDriver` waits on it itself.
+    reaper = None if subreaper_problem else OrphanReaper(exclude=(driver.pid,))
 
     def _answer_dialog(prompt: str, keys: Sequence[bytes]) -> None:
         # `keys` is computed per frame by `Liveness` from where the wanted
@@ -162,13 +178,19 @@ def serve(
     activity: dict[str, float] = {}
     proxy = Proxy(
         tracker=tracker,
-        emitter=Emitter(tracker, out=stdout),
+        emitter=Emitter(
+            tracker,
+            out=stdout,
+            extra_counts=(lambda: {"orphan": reaper.count()}) if reaper else None,
+        ),
         queue=SubmitQueue(),
         liveness=Liveness(on_prompt=_answer_dialog),
         fallback=FallbackEot(),
         read_entries=tailer.read_new,
         read_output=_read_task_output,
         activity=activity,
+        reaper=reaper,
+        kill_orphans=KILL_ORPHANS,
     )
 
     # `on_query` answers the inner's terminal-capability probes (DA1,

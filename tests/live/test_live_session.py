@@ -40,6 +40,14 @@ START_BACKGROUND = (
 )
 SECOND_PROMPT = "Reply with exactly: SECOND"
 
+# A foreground shell command that leaves a process behind: the shell returns
+# at once, the `sleep` is orphaned, and the proxy (a subreaper) adopts it.
+# Redirected so the tool's own pipes do not keep the shell waiting on it.
+DETACH_PROMPT = (
+    "Use the Bash tool, NOT in background mode, to run exactly this command: "
+    "sleep 8 >/dev/null 2>&1 &   Then reply with exactly: DETACHED"
+)
+
 SESSION_BUDGET_S = 180.0
 
 
@@ -177,8 +185,52 @@ def test_a_queued_prompt_a_background_task_and_an_unowned_turn_all_drain(session
     # The stream is well formed all the way through.
     assert [m["seq"] for m in messages] == list(range(1, len(messages) + 1))
     assert all(
-        set(m["outstanding"]) == {"user", "unowned", "background", "monitor", "agent"} for m in messages
+        set(m["outstanding"]) == {"user", "unowned", "background", "monitor", "agent", "orphan"}
+        for m in messages
     )
+
+    session.stdin.close()
+    assert session.wait(timeout=60) == 0
+
+
+def test_a_process_the_shell_left_behind_is_counted_until_it_exits(session):
+    """SPEC success criterion 7, against the installed `claude` and the real
+    kernel: the transcript is done with the `sleep` the moment its shell
+    returns, and the proxy is not."""
+    reader = Reader(session)
+    session.stdin.write(json.dumps({"type": "submit", "text": DETACH_PROMPT}) + "\n")
+    session.stdin.flush()
+
+    def orphan_ended(messages: list[dict]) -> bool:
+        return any(m["type"] == "orphan_end" for m in messages)
+
+    messages = reader.wait_for(orphan_ended, SESSION_BUDGET_S)
+    print(summarise(messages))
+
+    # The inner orphans a process of its own on the first Bash call (the
+    # `/bin/bash -c -l` that writes its shell snapshot), so look for the sleep
+    # rather than for exactly one adoption.
+    starts = [m for m in messages if m["type"] == "orphan_start"]
+    ours = [m for m in starts if "sleep 8" in (m["process"]["command"] or "")]
+    assert len(ours) == 1, summarise(messages)
+    assert ours[0]["outstanding"]["orphan"] >= 1
+    pid = ours[0]["process"]["pid"]
+
+    def sleep_ended(messages: list[dict]) -> bool:
+        return any(
+            m["type"] == "orphan_end" and m["process"]["pid"] == pid for m in messages
+        )
+
+    messages = reader.wait_for(sleep_ended, SESSION_BUDGET_S)
+    end = next(m for m in messages if m["type"] == "orphan_end" and m["process"]["pid"] == pid)
+    assert (end["status"], end["exit_code"]) == ("exited", 0)
+    assert end["outstanding"]["orphan"] == 0
+
+    # The turn itself ended long before the sleep did; the count is the only
+    # thing that said anything was still running in between.
+    turn_end = next(m for m in messages if m["type"] == "turn_end")
+    assert turn_end["seq"] < end["seq"]
+    assert not any(messages[-1]["outstanding"].values())
 
     session.stdin.close()
     assert session.wait(timeout=60) == 0

@@ -1,9 +1,11 @@
 """The message envelope and the writer that puts it on stdout.
 
-Every message the proxy emits carries `seq`, `type`, the three `outstanding`
-counts, and — when it belongs to a turn — that turn's `id` and `kind`. The
+Every message the proxy emits carries `seq`, `type`, every `outstanding`
+count, and (when it belongs to a turn) that turn's `id` and `kind`. The
 counts come from `TurnTracker.outstanding()` at the moment of writing rather
-than from the caller, so nothing can emit a count that has gone stale.
+than from the caller, so nothing can emit a count that has gone stale. A
+count that is not the tracker's (`orphan`, read from the process tree) is
+merged in the same way, through `extra_counts`.
 
 Field order is fixed so a human reading the stream, or a diff of two captured
 runs, sees the envelope before the payload.
@@ -13,7 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import IO, Iterable, Optional
+from typing import IO, Callable, Iterable, Optional
 
 from agentproxy import log
 from agentproxy.turn_tracker import TurnTracker
@@ -29,14 +31,34 @@ class Emitter:
     that sees a gap knows it dropped a line.
     """
 
-    def __init__(self, tracker: TurnTracker, out: Optional[IO[str]] = None) -> None:
+    def __init__(
+        self,
+        tracker: TurnTracker,
+        out: Optional[IO[str]] = None,
+        extra_counts: Optional[Callable[[], dict]] = None,
+    ) -> None:
         self._tracker = tracker
         self._out = out if out is not None else sys.stdout
+        self._extra_counts = extra_counts
         self._seq = 0
 
     @property
     def seq(self) -> int:
         return self._seq
+
+    def outstanding(self) -> dict:
+        """Every count, right now: the tracker's, plus any source outside it.
+
+        The one place the counts are assembled, so what `has_unfinished_work`
+        tests and what a message carries can never disagree. `extra_counts`
+        is None when there is no such source, and its keys are then simply
+        absent from the wire, never a `0` claiming knowledge the proxy does
+        not have.
+        """
+        counts = self._tracker.outstanding()
+        if self._extra_counts is not None:
+            counts.update(self._extra_counts())
+        return counts
 
     def emit(self, event: dict) -> dict:
         """Write one event as a complete message; return what was written.
@@ -49,7 +71,7 @@ class Emitter:
         message = {"seq": self._seq, "type": event["type"]}
         if event.get("turn") is not None:
             message["turn"] = event["turn"]
-        message["outstanding"] = self._tracker.outstanding()
+        message["outstanding"] = self.outstanding()
         for key, value in event.items():
             if key not in _ENVELOPE_KEYS:
                 message[key] = value

@@ -40,6 +40,7 @@ class ReferenceClient:
         self.open_user: set[str] = set()
         self.open_unowned: set[str] = set()
         self.open_tasks: dict[str, str] = {}   # task id -> kind
+        self.open_orphans: set[int] = set()    # pids reparented to the proxy
         self.ended: dict[str, dict] = {}
         self.started: set[str] = set()
         # Only a `state` reply says which turns are queued and which are
@@ -84,6 +85,10 @@ class ReferenceClient:
             self.open_tasks[message["task"]["id"]] = message["task"]["kind"]
         elif kind == "task_end":
             self.open_tasks.pop(message["task"]["id"], None)
+        elif kind == "orphan_start":
+            self.open_orphans.add(message["process"]["pid"])
+        elif kind == "orphan_end":
+            self.open_orphans.discard(message["process"]["pid"])
         elif kind == "state":
             self.adopt(message)
         elif kind == "error":
@@ -109,6 +114,7 @@ class ReferenceClient:
         self.open_user = {t["id"] for t in state["turns"] if t["kind"] == "user"}
         self.open_unowned = {t["id"] for t in state["turns"] if t["kind"] == "unowned"}
         self.open_tasks = {task["id"]: task["kind"] for task in state["tasks"]}
+        self.open_orphans = {o["pid"] for o in state.get("orphans", ())}
         self.queued = {t["id"] for t in state["turns"] if t["state"] == "queued"}
         self.running = {t["id"] for t in state["turns"] if t["state"] == "running"}
 
@@ -134,9 +140,13 @@ class ReferenceClient:
         key. A kind this client has never heard of counts under `background`,
         which is what keeps the comparison honest when the proxy learns a new
         one before the client does.
+
+        `orphan` is derived only where the stream carries it: the key's
+        presence says the proxy is a subreaper, and its absence says it never
+        looked. A client cannot derive a count the proxy does not keep.
         """
         kinds = collections.Counter(self.open_tasks.values())
-        return {
+        derived = {
             "user": len(self.open_user),
             "unowned": len(self.open_unowned),
             "background": len(self.open_tasks)
@@ -145,6 +155,9 @@ class ReferenceClient:
             "monitor": kinds["monitor"],
             "agent": kinds["agent"],
         }
+        if "orphan" in self.counts:
+            derived["orphan"] = len(self.open_orphans)
+        return derived
 
     def turn_for(self, ref: object) -> Optional[str]:
         """The turn id the `ack` for this command carried, if it was accepted."""

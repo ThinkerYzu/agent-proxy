@@ -23,11 +23,11 @@ echo '{"type":"submit","text":"Reply with exactly: PONG"}' | agent-proxy
 ```
 
 ```json
-{"seq": 1, "type": "ready", "outstanding": {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}, "session_id": "…"}
-{"seq": 2, "type": "ack", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}}
-{"seq": 3, "type": "turn_start", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}}
-{"seq": 4, "type": "text", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}, "text": "PONG"}
-{"seq": 5, "type": "turn_end", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}, "basis": "marker:turn_duration", "outcome": "success", "usage": {"duration_ms": 1670, "output_tokens": 5}}
+{"seq": 1, "type": "ready", "outstanding": {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0, "orphan": 0}, "session_id": "…"}
+{"seq": 2, "type": "ack", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0, "orphan": 0}}
+{"seq": 3, "type": "turn_start", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0, "orphan": 0}}
+{"seq": 4, "type": "text", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0, "orphan": 0}, "text": "PONG"}
+{"seq": 5, "type": "turn_end", "turn": {"id": "t-1", "kind": "user"}, "outstanding": {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0, "orphan": 0}, "basis": "marker:turn_duration", "outcome": "success", "usage": {"duration_ms": 1670, "output_tokens": 5}}
 ```
 
 Unrecognised arguments go through to the inner `claude`, so `agent-proxy
@@ -76,7 +76,7 @@ outstanding count, and — when it belongs to a turn — that turn's id and kind
 
 ```json
 {"seq": 41, "type": "turn_start", "turn": {"id": "t-6", "kind": "unowned"},
- "outstanding": {"user": 0, "unowned": 1, "background": 0, "monitor": 0, "agent": 0}, "caused_by": "bsynthimport"}
+ "outstanding": {"user": 0, "unowned": 1, "background": 0, "monitor": 0, "agent": 0, "orphan": 0}, "caused_by": "bsynthimport"}
 ```
 
 That one line is the project in miniature: a turn nobody prompted, named, and
@@ -97,6 +97,7 @@ tied to the background command whose completion woke it.
 | `src/agentproxy/fallback.py` | ending a turn that no marker closed |
 | `src/agentproxy/submit_queue.py` | accepted prompts, typed one at a time |
 | `src/agentproxy/inner_claude.py` | argv, env and session id for the inner spawn |
+| `src/agentproxy/orphans.py` | processes the inner lost track of: the subreaper flag, adoption, reaping, the `orphan` count |
 | `src/agentproxy/replay.py` | replay a recorded transcript, with no live `claude` |
 | `src/agentproxy/{pty_driver,io_loop,screen_model,input_encoder,transcript_tailer,ids,log}.py` | inherited from claudejson |
 | `tools/make_synthetic_fixture.py` | build the test session out of real entry shapes |
@@ -113,8 +114,9 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-214 tests, none of which needs a `claude` binary. Four more do, and are opt-in
-twice over — a marker alone deselects nothing on a bare `pytest`, and these
+243 tests, none of which needs a `claude` binary (one of them proves the
+subreaper mechanism on the real kernel, in a subprocess). Five more do, and
+are opt-in twice over — a marker alone deselects nothing on a bare `pytest`, and these
 spend real quota:
 
 ```bash

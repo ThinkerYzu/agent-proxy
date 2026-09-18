@@ -69,6 +69,7 @@ Two things worth knowing:
 | `AGENTPROXY_FALLBACK_STALL_S` | `1800` | the ceiling — transcript quiet this long ends a turn regardless |
 | `AGENTPROXY_FALLBACK_UNMATCHED_S` | `60` | a typed prompt unrecognised this long, with nothing running, ends |
 | `AGENTPROXY_SETTLE_QUIESCENCE_S` | `0.5` | how long to wait after the first idle frame before typing |
+| `AGENTPROXY_KILL_ORPHANS` | unset | `1` kills adopted orphan processes when the proxy exits (SIGTERM, 2 s, SIGKILL); unset leaves them running and reports them `abandoned` — see [Orphaned processes](#orphaned-processes) |
 | `CLAUDEJSON_SEND_QUIESCENCE_S` | `0.7` | pty quiet required before keystrokes go out (inherited name) |
 | `CLAUDEJSON_RESUBMIT_QUIESCENCE_S` | `1.5` | pty quiet required before re-sending a submit CR (inherited name) |
 
@@ -82,7 +83,7 @@ Every line on stdout is one complete JSON object with the same envelope:
 
 ```json
 {"seq": 42, "type": "text", "turn": {"id": "t-7", "kind": "user"},
- "outstanding": {"user": 1, "unowned": 0, "background": 2, "monitor": 0, "agent": 0},
+ "outstanding": {"user": 1, "unowned": 0, "background": 2, "monitor": 0, "agent": 0, "orphan": 0},
  "text": "The stale search turned up a glib checkout I didn't use."}
 ```
 
@@ -111,13 +112,16 @@ only early, and the next message restates them.
 | `background` | background shell commands still running | that task's `task_end` |
 | `monitor` | monitors still watching | that task's `task_end` |
 | `agent` | subagents still working | that task's `task_end` |
+| `orphan` | processes the inner lost track of, now the proxy's children; see [Orphaned processes](#orphaned-processes) | that process's `orphan_end`. Present only on Linux; absent, not `0`, elsewhere |
 
-**The counts are disjoint, and no work is outside them.** Nothing is counted
-twice and nothing is missing, so `any(outstanding.values())` is the whole
-answer to "is anything still running" — including for a count added after your
-client was written. Do not hard-code the key list: read the values. A task
-whose launch was never recognised counts under `background`, which is the
-likeliest thing an unrecognised launch is.
+**Every count is zero exactly when nothing of its kind is running, and no
+work is outside them.** So `any(outstanding.values())` is the whole answer to
+"is anything still running" — including for a count added after your client
+was written. Do not hard-code the key list: read the values. A task whose
+launch was never recognised counts under `background`, which is the likeliest
+thing an unrecognised launch is. The turn and task counts are disjoint and
+summable; `orphan` counts *processes* rather than tasks, so add it to nothing.
+Test it.
 
 A background task is not a turn. One that finishes while the agent is idle
 starts an unowned turn; one that finishes mid-turn is folded into the running
@@ -204,7 +208,9 @@ a queued turn, no interrupt for a running one.
 | `turn_end` | a turn finished | `basis`, `outcome`, `usage` |
 | `task_start` | background work was launched | `task` (`{id, kind}`), `summary` (string or null), `command` (string or null) |
 | `task_end` | background work ended | `task` (`{id, kind}`), `status`, `exit_code` (int or null), `output` (string or null) |
-| `state` | reply to `status` | `turns`, `tasks`, `ref` if the query carried one |
+| `orphan_start` | a process was reparented to the proxy | `process` (`{pid, command}`); see [Orphaned processes](#orphaned-processes) |
+| `orphan_end` | an adopted process ended, or the proxy stopped watching it | `process`, `status` (`exited`, `killed`, `abandoned`), `exit_code` (int or null), `signal` (int or null) |
+| `state` | reply to `status` | `turns`, `tasks`, `orphans` (Linux only), `ref` if the query carried one |
 | `error` | a rejected command, or a session failure | `error` (string), `ref` if a rejected command carried one |
 
 Notes on the fields that carry weight:
@@ -240,9 +246,10 @@ has seen before:
 
 ```json
 {"seq": 88, "type": "state",
- "outstanding": {"user": 1, "unowned": 0, "background": 1, "monitor": 0, "agent": 0},
+ "outstanding": {"user": 1, "unowned": 0, "background": 1, "monitor": 0, "agent": 0, "orphan": 1},
  "turns": [{"id": "t-4", "kind": "user", "state": "queued", "caused_by": null}],
- "tasks": [{"id": "bunha2ebm", "kind": "shell", "summary": "build firefox", "command": "./mach build"}]}
+ "tasks": [{"id": "bunha2ebm", "kind": "shell", "summary": "build firefox", "command": "./mach build"}],
+ "orphans": [{"pid": 28457, "command": "tail -f /dev/null"}]}
 ```
 
 Give the `status` a `ref` and the `state` carries it back; two queries in
@@ -252,6 +259,49 @@ It lists turns, not the `ref`s that claimed them, so **keep your own ref-to-id
 map across a reconnect**. A turn id in the reply can be recognised as one you
 were already waiting on; it cannot be re-attached afterwards to a prompt whose
 `ack` you never read.
+
+## Orphaned processes
+
+A process the model starts can outlive the shell that started it: `cmd &`
+with the shell returning at once, a daemon that double-forks, or everything
+left behind if the inner `claude` dies. The inner's own task tracking has
+lost it by then, so no `task_end` will ever mention it, and without this
+section the counts would read zero while it ran on.
+
+On Linux the proxy makes itself the *subreaper* of its process tree
+(`prctl(PR_SET_CHILD_SUBREAPER)`), so every such process is reparented to the
+proxy instead of to init. The proxy then reports them like tasks:
+
+- `orphan_start` when one appears, with its `pid` and `command`, the process's
+  own command line, cut to 256 characters, or `null` if it had already exited
+  by the time the proxy looked.
+- `orphan_end` when it is reaped, with `status: "exited"` and its `exit_code`,
+  or `status: "killed"` and the `signal` that ended it.
+- `outstanding.orphan`, the number alive right now, on every message.
+- `orphans` in the `state` reply, listing the ones alive.
+
+Three things to expect:
+
+- **The inner orphans processes of its own.** Its first Bash call in a
+  session spawns a `/bin/bash -c -l` that writes a shell snapshot and is
+  orphaned for a moment; you will see an `orphan_start`/`orphan_end` pair for
+  it inside the turn. That is the truth about the process tree, not a fault.
+- **An `orphan_start` can precede the `tool_use` that caused it.** The process
+  tree is read directly and the transcript lags, so the process is often seen
+  before the tool call that spawned it is.
+- **At shutdown the survivors are `abandoned` by default**: reported with
+  `orphan_end` `status: "abandoned"` and left running, since the proxy cannot
+  tell a leak from a server the model detached on purpose. Set
+  `AGENTPROXY_KILL_ORPHANS=1` to have them terminated instead (SIGTERM, a 2 s
+  grace, then SIGKILL), each reported with its real ending. Either way every
+  `orphan_start` gets its `orphan_end` and the final counts are zero.
+
+Only a process whose parent has died is counted. A grandchild whose parent is
+still running belongs to that parent's task and is covered by `background`;
+it moves to `orphan` on its own the moment the parent exits.
+
+Off Linux, or where the `prctl` fails, the proxy runs as before: no `orphan`
+key on any message, no `orphans` in `state`, and nothing adopted.
 
 ## The shape of one turn
 
@@ -343,15 +393,16 @@ reaching `claude` in a different form from the one the client sent.
 When the inner `claude` dies or the proxy hits an exception, it emits an
 `error` and then closes everything it opened: the running turn and every turn
 queued behind it get a `turn_end` with `basis: "error"` and
-`outcome: "error"`, and every unfinished background task gets a `task_end`
-with `"exit_code": null`. No counter is left above zero and no client is left
-waiting on an id that will never complete.
+`outcome: "error"`, every unfinished background task gets a `task_end`
+with `"exit_code": null`, and every adopted orphan process gets an
+`orphan_end` ([abandoned or killed](#orphaned-processes)). No counter is left
+above zero and no client is left waiting on an id that will never complete.
 
 Closing stdin is the clean shutdown. The proxy finishes the turn in flight,
-then exits. A background task still running does **not** hold the session
-open — the client that would hear about it has already gone — so that case
-ends with `"error": "client closed stdin with background work still running"`
-followed by the closing messages. Other reasons appear in the same field:
+then exits. A background task or an orphan process still running does
+**not** hold the session open — the client that would hear about it has
+already gone — so that case ends with `"error": "client closed stdin with
+background work still running"` followed by the closing messages. Other reasons appear in the same field:
 
 | `error` text | Cause |
 |---|---|
@@ -408,6 +459,7 @@ subprocess.
 | `agentproxy.cli.main(argv)` | the console-script entry point |
 | `agentproxy.turn_tracker.TurnTracker` | the turn table alone — `submit`, `mark_typed`, `on_entry`, `end_running_turn`, `fail_session`, `outstanding`, `snapshot` |
 | `agentproxy.protocol.Emitter` | stamps `seq` and `outstanding` and writes a message |
+| `agentproxy.orphans.OrphanReaper` | the adopted-process table: `poll`, `count`, `alive`, `shutdown`; `become_subreaper()` sets the flag |
 | `agentproxy.replay.replay(transcript, prompts, out)` | drive a tracker from a recorded transcript, with no `claude` |
 
 `TurnTracker` does no I/O and returns events as plain dicts, which is what

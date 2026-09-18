@@ -19,6 +19,7 @@ import json
 
 from agentproxy.fallback import FallbackEot
 from agentproxy.liveness import Liveness
+from agentproxy.orphans import OrphanReaper
 from agentproxy.protocol import Emitter
 from agentproxy.proxy import Proxy
 from agentproxy.submit_queue import SubmitQueue
@@ -155,13 +156,66 @@ class Screen:
         self.display = [HRULE, "❯ Try \"fix the bug\"", HRULE, footer] + [""] * 36
 
 
+class ProcessTree:
+    """A scripted process tree standing in for `/proc` and `waitpid`.
+
+    Which pids are the proxy's children, what each one's command line reads,
+    and how each one ends, with no processes anywhere. `reaper()` builds an
+    `OrphanReaper` reading from it, for a `Session` or on its own.
+    """
+
+    def __init__(self) -> None:
+        self.children: list[int] = []
+        self.commands: dict[int, str | None] = {}
+        self.statuses: dict[int, int | None] = {}  # None = still running
+        self.signals: list[tuple[int, int]] = []
+
+    def spawn(self, pid: int, command: str | None = "sleep 5") -> None:
+        """A process orphaned below the proxy: the kernel lists it as a child."""
+        self.children.append(pid)
+        self.commands[pid] = command
+        self.statuses[pid] = None
+
+    def exits(self, pid: int, code: int = 0) -> None:
+        self.statuses[pid] = code << 8
+
+    def dies_from(self, pid: int, sig: int) -> None:
+        self.statuses[pid] = sig
+
+    def reaper(self, exclude: tuple[int, ...] = ()) -> OrphanReaper:
+        return OrphanReaper(
+            exclude,
+            list_children=lambda: list(self.children),
+            read_command=self.commands.get,
+            wait=self._wait,
+            kill=self._kill,
+            sleep=lambda _s: None,
+        )
+
+    def _wait(self, pid: int) -> int | None:
+        status = self.statuses[pid]
+        if status is not None:
+            self.children.remove(pid)
+        return status
+
+    def _kill(self, pid: int, sig: int) -> None:
+        self.signals.append((pid, sig))
+        # Everything scripted here dies to the first signal it is sent.
+        self.statuses[pid] = sig
+
+
 class Session:
     """One proxied session: a scripted inner `claude` and a stand-in io loop."""
 
-    def __init__(self) -> None:
+    def __init__(self, tree: ProcessTree | None = None, kill_orphans: bool = False) -> None:
         self.clock = Clock()
         self.out = io.StringIO()
         self.tracker = TurnTracker()
+        # A `ProcessTree` makes this proxy a subreaper with a scripted set of
+        # children; without one the session has no orphan count, as on a host
+        # where the flag cannot be set.
+        self.tree = tree
+        reaper = tree.reaper() if tree is not None else None
         self.queue = SubmitQueue()
         self.activity = {"last_pty": self.clock.now, "last_activity": self.clock.now}
         self._entries: list[dict] = []
@@ -172,15 +226,24 @@ class Session:
         # A background task's output file, in memory: tests set
         # `session.task_outputs[path] = "..."` before the task_end that reads it.
         self.task_outputs: dict[str, str] = {}
+        # `emitter.outstanding()` is every count the wire carries, orphans
+        # included; `tracker.outstanding()` is the transcript's share alone.
+        self.emitter = Emitter(
+            self.tracker,
+            out=self.out,
+            extra_counts=(lambda: {"orphan": reaper.count()}) if reaper else None,
+        )
         self.proxy = Proxy(
             tracker=self.tracker,
-            emitter=Emitter(self.tracker, out=self.out),
+            emitter=self.emitter,
             queue=self.queue,
             liveness=Liveness(clock=self.clock),
             fallback=FallbackEot(clock=self.clock),
             read_entries=self._read_entries,
             read_output=self.task_outputs.get,
             activity=self.activity,
+            reaper=reaper,
+            kill_orphans=kill_orphans,
         )
         self.proxy.announce_ready("session-under-test")
         # Two frames, because the inner is not considered ready for input until

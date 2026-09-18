@@ -19,6 +19,10 @@ from collections import Counter
 
 
 TURN_KINDS = {"user", "unowned"}
+COUNTS = {"user", "unowned", "background", "monitor", "agent"}
+# Present on every message or on none: a proxy that could not become a
+# subreaper never looked, and says nothing rather than `0`.
+OPTIONAL_COUNTS = {"orphan"}
 
 
 def envelope(messages: list[dict]) -> None:
@@ -29,10 +33,12 @@ def envelope(messages: list[dict]) -> None:
     UI in a state no later message could correct.
     """
     assert [m["seq"] for m in messages] == list(range(1, len(messages) + 1))
+    keys = set(messages[0]["outstanding"])
+    assert COUNTS <= keys <= COUNTS | OPTIONAL_COUNTS, messages[0]
     for message in messages:
         assert isinstance(message.get("type"), str), message
         counts = message["outstanding"]
-        assert set(counts) == {"user", "unowned", "background", "monitor", "agent"}, message
+        assert set(counts) == keys, message
         assert all(isinstance(value, int) and value >= 0 for value in counts.values())
 
 
@@ -109,6 +115,7 @@ def every_turn_ends(messages: list[dict]) -> None:
     """
     opened, ended = set(), set()
     tasks_opened, tasks_ended = set(), set()
+    orphans_opened, orphans_ended = set(), set()
     for message in messages:
         kind = message["type"]
         if kind in {"ack", "turn_start"}:
@@ -119,9 +126,15 @@ def every_turn_ends(messages: list[dict]) -> None:
             tasks_opened.add(message["task"]["id"])
         elif kind == "task_end":
             tasks_ended.add(message["task"]["id"])
+        elif kind == "orphan_start":
+            orphans_opened.add(message["process"]["pid"])
+        elif kind == "orphan_end":
+            orphans_ended.add(message["process"]["pid"])
     assert opened - ended == set(), f"turns left hanging: {sorted(opened - ended)}"
     assert tasks_opened - tasks_ended == set(), sorted(tasks_opened - tasks_ended)
-    assert messages[-1]["outstanding"] == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0}
+    assert orphans_opened - orphans_ended == set(), sorted(orphans_opened - orphans_ended)
+    final = messages[-1]["outstanding"]
+    assert COUNTS <= set(final) and not any(final.values()), final
 
 
 def all_of_them(messages: list[dict]) -> None:

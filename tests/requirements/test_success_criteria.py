@@ -8,6 +8,7 @@
 | 4 — no premature end-of-turn | `tests/integration/test_live_wrapping.py::test_a_mid_turn_footer_flicker_produces_one_end_of_turn_at_the_real_end` |
 | 5 — a client's end-of-turn is its own | `tests/integration/test_live_wrapping.py::test_each_client_wait_resolves_on_its_own_turn_id` |
 | 6 — reconnect is correct | here — `test_criterion_6_*` |
+| 7 — an escaped process is counted until it exits | here — `test_criterion_7_*`, over a scripted process tree; the kernel mechanism itself is `tests/unit/test_orphans.py::test_the_flag_adopts_a_grandchild_whose_parent_exited`, and the live tier runs the same shape through a real `claude` |
 
 """
 
@@ -18,6 +19,7 @@ from collections import Counter
 import pytest
 
 from tests.harness import (
+    ProcessTree,
     Session,
     assistant_text,
     assistant_tool_use,
@@ -62,7 +64,7 @@ def pump(
         assert client.derived == client.counts, (
             f"client sees {client.derived}, proxy says {client.counts}"
         )
-        assert client.counts == session.tracker.outstanding()
+        assert client.counts == session.emitter.outstanding()
 
 
 # ----------------------------------------------------------------------
@@ -329,3 +331,52 @@ def test_criterion_6_a_client_with_no_history_at_all_is_correct_too(session):
     assert len(newcomer.running) == 1 and len(newcomer.queued) == 1
     assert newcomer.open_unowned == newcomer.running
     assert newcomer.turn_of == {}
+
+
+# ----------------------------------------------------------------------
+# Criterion 7 — an escaped process is counted until it exits
+# ----------------------------------------------------------------------
+
+
+def test_criterion_7_a_process_the_task_left_behind_is_counted_until_it_exits():
+    """The model runs `sleep 5 &` in a background shell. The shell exits, the
+    task ends, and the transcript is done with it. But the `sleep` is alive,
+    now the proxy's child, and stays on the wire until it is not.
+    """
+    tree = ProcessTree()
+    session = Session(tree=tree)
+    client = ReferenceClient()
+
+    session.submit("start a sleep in the background")
+    pump(session, client)
+    session.footer_idle = False
+    session.writes(
+        user_text("start a sleep in the background"),
+        assistant_tool_use("toolu_1", "detach a sleep"),
+        background_launch("toolu_1", "bg1"),
+    )
+    pump(session, client)
+    assert client.counts["background"] == 1
+
+    # The shell finishes at once: its task ends, and what it forked is ours.
+    tree.spawn(4242, "sleep 5")
+    session.writes(
+        queue_operation("enqueue", notification("bg1", "toolu_1")),
+        queue_operation("remove"),
+        assistant_text("started"),
+        marker(),
+    )
+    session.footer_idle = True
+    pump(session, client)
+    assert client.counts == {"user": 0, "unowned": 0, "background": 0, "monitor": 0, "agent": 0, "orphan": 1}
+    starts = session.of_type("orphan_start")
+    assert [m["process"] for m in starts] == [{"pid": 4242, "command": "sleep 5"}]
+    # From the moment the shell exited: the same tick that ended the task.
+    assert starts[0]["outstanding"]["background"] == 0
+
+    tree.exits(4242)
+    pump(session, client)
+    ends = session.of_type("orphan_end")
+    assert [(m["process"]["pid"], m["status"], m["exit_code"]) for m in ends] == [(4242, "exited", 0)]
+    assert not any(client.counts.values())
+    invariants.all_of_them(session.messages())

@@ -1,4 +1,4 @@
-"""The twelve functional requirements of the SPEC, one test group each.
+"""The thirteen functional requirements of the SPEC, one test group each.
 
 These are traceability tests: each one names the requirement it stands for and
 asserts what that requirement promises a client, on the protocol's own terms —
@@ -21,6 +21,7 @@ asserts the requirement over a whole session instead of repeating the unit.
 | 10 — errors and termination | `test_requirement_10_*` (three tests) |
 | 11 — no turn may hang without an end-of-turn | `test_requirement_11_*` (four tests) |
 | 12 — session identity stated first, and always | `test_requirement_12_*` (three tests) |
+| 13 — orphaned processes are counted | `test_requirement_13_*` (five tests) |
 
 """
 
@@ -36,6 +37,7 @@ from agentproxy.turn_tracker import TurnTracker
 
 from tests.harness import (
     monitor_event,
+    ProcessTree,
     Session,
     assistant_text,
     assistant_thinking,
@@ -903,3 +905,103 @@ def test_requirement_12_an_unresolvable_invocation_says_so_and_starts_nothing():
     assert len(messages) == 1
     assert messages[0]["type"] == "error"
     assert "--fork-session" in messages[0]["error"]
+
+
+# ----------------------------------------------------------------------
+# Requirement 13 — orphaned processes are counted
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def tree() -> ProcessTree:
+    return ProcessTree()
+
+
+@pytest.fixture
+def reaping(tree) -> Session:
+    """A session whose proxy is a subreaper over a scripted process tree."""
+    return Session(tree=tree)
+
+
+def test_requirement_13_a_process_that_outlived_its_shell_is_counted_while_it_lives(reaping, tree):
+    """The transcript will never mention it; the count and the two messages
+    are what a client gets instead of running `ps`."""
+    assert reaping.messages()[-1]["outstanding"]["orphan"] == 0
+
+    tree.spawn(4242, "sleep 5")  # the shell that launched it has exited
+    reaping.tick()
+    start = reaping.of_type("orphan_start")
+    assert [m["process"] for m in start] == [{"pid": 4242, "command": "sleep 5"}]
+    assert start[0]["outstanding"]["orphan"] == 1
+
+    tree.exits(4242, code=0)
+    reaping.tick()
+    end = reaping.of_type("orphan_end")
+    assert [m["process"] for m in end] == [{"pid": 4242, "command": "sleep 5"}]
+    assert (end[0]["status"], end[0]["exit_code"], end[0]["signal"]) == ("exited", 0, None)
+    assert end[0]["outstanding"]["orphan"] == 0
+    assert not reaping.proxy.has_unfinished_work
+
+
+def test_requirement_13_the_count_is_in_processes_and_zero_exactly_when_none_is_alive(reaping, tree):
+    """Not summable with the task counts, but `any(outstanding.values())`
+    still answers "is anything running", the invariant a client relies on."""
+    tree.spawn(1, "a")
+    tree.spawn(2, "b")
+    tree.spawn(3, "c")
+    reaping.tick()
+    assert reaping.messages()[-1]["outstanding"]["orphan"] == 3
+    assert reaping.proxy.has_unfinished_work
+    tree.exits(1)
+    tree.exits(2)
+    reaping.tick()
+    assert reaping.messages()[-1]["outstanding"]["orphan"] == 1
+    assert reaping.proxy.has_unfinished_work
+    tree.exits(3)
+    reaping.tick()
+    assert reaping.messages()[-1]["outstanding"]["orphan"] == 0
+    assert not reaping.proxy.has_unfinished_work
+    invariants.envelope(reaping.messages())
+
+
+def test_requirement_13_the_state_reply_lists_the_ones_alive(reaping, tree):
+    tree.spawn(4242, "python serve.py")
+    reaping.tick()
+    reaping.send({"type": "status"})
+    state = reaping.of_type("state")[-1]
+    assert state["orphans"] == [{"pid": 4242, "command": "python serve.py"}]
+    assert state["outstanding"]["orphan"] == 1
+
+
+def test_requirement_13_shutdown_abandons_the_survivors_by_default(reaping, tree):
+    """The status quo made visible: they keep running, the client is told, and
+    the closing counts say zero because the proxy has stopped watching."""
+    tree.spawn(4242, "nohup server")
+    reaping.tick()
+    reaping.proxy.fail("inner claude exited")
+    closing = reaping.of_type("orphan_end")
+    assert [(m["process"]["pid"], m["status"]) for m in closing] == [(4242, "abandoned")]
+    assert tree.signals == []
+    assert reaping.messages()[-1]["outstanding"]["orphan"] == 0
+    invariants.every_turn_ends(reaping.messages())
+
+
+def test_requirement_13_shutdown_kills_the_survivors_only_when_asked(tree):
+    import signal
+
+    killing = Session(tree=tree, kill_orphans=True)
+    tree.spawn(4242, "sleep 900")
+    killing.tick()
+    killing.proxy.fail("inner claude exited")
+    closing = killing.of_type("orphan_end")
+    assert tree.signals == [(4242, int(signal.SIGTERM))]
+    assert [(m["status"], m["signal"]) for m in closing] == [("killed", int(signal.SIGTERM))]
+    assert killing.messages()[-1]["outstanding"]["orphan"] == 0
+
+
+def test_requirement_13_without_the_flag_there_is_no_count_at_all(session):
+    """Absent rather than `0`: a proxy that could not become a subreaper has
+    never looked, and must not claim it has."""
+    session.send({"type": "status"})
+    assert "orphan" not in session.messages()[-1]["outstanding"]
+    assert "orphans" not in session.of_type("state")[-1]

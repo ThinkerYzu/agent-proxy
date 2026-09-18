@@ -49,3 +49,26 @@ def test_seq_counts_every_line_written():
     )
     assert [m["seq"] for m in messages] == [1, 2]
     assert emitter.seq == 2
+
+
+def test_a_count_from_outside_the_tracker_is_merged_into_every_message():
+    """`orphan` is read from the process tree, not the tracker's tables, and
+    lands in `outstanding` like any other count, read at emission."""
+    tracker = TurnTracker()
+    orphans = {"orphan": 0}
+    emitter = Emitter(tracker, out=io.StringIO(), extra_counts=lambda: dict(orphans))
+    _, events = tracker.submit("hello")
+
+    orphans["orphan"] = 2
+    message = emitter.emit(events[0])
+    assert message["outstanding"] == {
+        "user": 1, "unowned": 0, "background": 0, "monitor": 0, "agent": 0, "orphan": 2,
+    }
+    assert emitter.outstanding() == message["outstanding"]
+
+
+def test_without_an_outside_source_the_key_is_absent_not_zero():
+    """A `0` would claim knowledge the proxy does not have: on a host where it
+    could not become a subreaper, it has simply never looked."""
+    emitter = Emitter(TurnTracker(), out=io.StringIO())
+    assert "orphan" not in emitter.outstanding()
