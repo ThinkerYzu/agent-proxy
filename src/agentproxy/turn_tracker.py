@@ -123,6 +123,13 @@ _EXIT_CODE_RE = re.compile(r"exit code (-?\d+)")
 # wording, for the same reason a launch does: the tool name is invisible here.
 _STOP_RE = re.compile(r"[Ss]uccessfully stopped task:?\s+([A-Za-z0-9_-]+)")
 
+# Since `claude` 2.1.277 a bracketed paste — which is how every prompt reaches
+# the inner — is recorded wrapped in a `pasted_content` block, closing tag
+# with the same id attribute as the opening one:
+#     \n\n<pasted_content id="fa0b">\n<the prompt>\n</pasted_content id="fa0b">\n
+# Left in, no prompt matches its entry and every turn runs as unowned.
+_PASTED_CONTENT_RE = re.compile(r"</?pasted_content\b[^>]*>")
+
 
 class CancelError(Exception):
     """A `cancel` the tracker will not act on; the message is the reason."""
@@ -843,10 +850,15 @@ def _normalise(text: str) -> str:
       eats it, so a prompt ending in `\\` reaches `claude` without one. Left
       in, the comparison fails and the prompt is never recognised as the one
       the proxy typed — see `end_typed_turn` for what that used to cost.
+    - **A `pasted_content` wrapper.** From 2.1.277 the TUI records a paste
+      inside `<pasted_content id="…">…</pasted_content id="…">` tags, and a
+      paste is how every prompt goes in. The tags are removed; the text
+      between them is the prompt.
 
     Both sides go through this, so stripping is symmetric: a backslash the TUI
     keeps is stripped from the transcript entry too, and the two still match.
     """
+    text = _PASTED_CONTENT_RE.sub(" ", text)
     return " ".join(text.split()).rstrip("\\")
 
 

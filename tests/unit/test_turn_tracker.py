@@ -360,6 +360,24 @@ def test_fallback_ends_a_turn_no_marker_closed(tracker):
     assert tracker.end_running_turn("fallback:idle") == []
 
 
+def test_a_prompt_the_tui_wrapped_as_pasted_content_still_binds(tracker):
+    """`claude` 2.1.277 records every bracketed paste inside a
+    `pasted_content` block. The wrapper is the TUI's, not the client's, so
+    `_normalise` removes it — otherwise no prompt would ever match and every
+    turn would run as unowned."""
+    turn, _ = tracker.submit('Use the Bash tool to run exactly: python3 -c "x"   Then reply: DONE')
+    tracker.mark_typed(turn)
+    events = tracker.on_entry(
+        user_text(
+            '\n\n<pasted_content id="fa0b">\nUse the Bash tool to run exactly: '
+            'python3 -c "x"   Then reply: DONE\n</pasted_content id="fa0b">\n'
+        )
+    )
+    assert types_of(events) == ["turn_start"]
+    assert events[0]["turn"] == {"id": turn.id, "kind": KIND_USER}
+    assert tracker.running_turn is turn
+
+
 # ----------------------------------------------------------------------
 # Cancellation — the interruption marker, and cancel by state
 # ----------------------------------------------------------------------

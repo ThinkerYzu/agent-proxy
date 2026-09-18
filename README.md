@@ -66,6 +66,7 @@ pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.1.0'
 |---|---|
 | a prompt answered | `{"type": "submit", "text": "…"}` on stdin |
 | authoritative state, any time | `{"type": "status"}` on stdin |
+| a turn taken back — dropped if still queued, interrupted with `Esc` if running | `{"type": "cancel", "turn": "t-6"}` on stdin; the turn ends `outcome: "cancelled"` once the inner is seen to stop |
 | to know which `ack` is yours | add a `"ref"` of your own to either — it comes back on the answer |
 | the tracker against a recorded session, no `claude` | `python3 -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-drained` |
 
@@ -114,8 +115,8 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-243 tests, none of which needs a `claude` binary (one of them proves the
-subreaper mechanism on the real kernel, in a subprocess). Five more do, and
+281 tests, none of which needs a `claude` binary (one of them proves the
+subreaper mechanism on the real kernel, in a subprocess). Seven more do, and
 are opt-in twice over — a marker alone deselects nothing on a bare `pytest`, and these
 spend real quota:
 
