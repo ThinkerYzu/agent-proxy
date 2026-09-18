@@ -112,6 +112,12 @@ _LAUNCH_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ),
 )
 
+# Comfortably above the longest of the three wordings above (~150 characters
+# in every fixture and live transcript surveyed, and the agent pattern's own
+# `.{0,200}?` gap bounds it further) and far below a file dump that merely
+# quotes one of them - see `_note_background_launch`.
+_LAUNCH_TEXT_MAX_LEN = 400
+
 _NOTIFICATION_TAG_RE = re.compile(
     r"<(task-id|tool-use-id|status|summary|output-file)>(.*?)</\1>", re.DOTALL
 )
@@ -712,6 +718,17 @@ class TurnTracker:
         backstop that keeps the count correct even then.
         """
         text = _flatten_text(block.get("content"))
+        # A real launch confirmation is a short, self-contained sentence or
+        # two - none of the wordings in `_LAUNCH_RES` run past ~150
+        # characters in any fixture or live transcript surveyed. Searching
+        # unconditionally let a file dump that merely quotes the wording
+        # register a task that was never launched - e.g. a `Bash cat` of this
+        # project's own HANDOFF.md, whose prose documents the exact phrase
+        # `_LAUNCH_RES` looks for (SPEC finding 9). A cap well above any real
+        # confirmation but far below a document dump tells them apart without
+        # having to parse or anchor the wording itself.
+        if len(text) > _LAUNCH_TEXT_MAX_LEN:
+            return []
         for kind, pattern in _LAUNCH_RES:
             match = pattern.search(text)
             if match is not None:
@@ -901,8 +918,20 @@ def _parse_notification(text: Optional[str]) -> Optional[dict]:
     finishing. It reaches the tracker twice for the same task — once as a
     `queue-operation`, once as the user entry it turns into — so callers must
     tolerate repeats.
+
+    Both tags are required, not just the opening one. A block missing
+    `<status>` is a legitimate mid-life monitor event (see `monitor_event` in
+    the tests) and is still well-formed - it ends with `</task-notification>`
+    either way. A block that ends somewhere else was cut off before reaching
+    its own end, most likely a paste truncated mid-tag; treating that as a
+    monitor event left it open forever, since the real task it half-quoted
+    belongs to a transcript this tracker never reads (SPEC finding 9).
     """
-    if not isinstance(text, str) or "<task-notification>" not in text:
+    if (
+        not isinstance(text, str)
+        or "<task-notification>" not in text
+        or "</task-notification>" not in text
+    ):
         return None
     tags = {name: value.strip() for name, value in _NOTIFICATION_TAG_RE.findall(text)}
     summary = tags.get("summary")

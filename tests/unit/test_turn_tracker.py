@@ -767,6 +767,52 @@ def test_an_event_for_an_unseen_monitor_still_announces_it(tracker):
     assert tracker.outstanding()["background"] == 1
 
 
+def test_a_file_dump_quoting_the_launch_wording_does_not_register_a_task(tracker):
+    """SPEC finding 9: reading a doc that quotes `_LAUNCH_RES`'s own wording
+    is not a launch.
+
+    Live: an ADE session read this project's own HANDOFF.md, whose prose
+    includes the literal placeholder `Monitor started (task X, ...)` from an
+    earlier session log. The regex matched it as a real launch and opened a
+    task with id "X" that nothing would ever end.
+    """
+    running_user_turn(tracker)
+    tracker.on_entry(assistant_tool_use("toolu_1", "read the handoff", background=False))
+    doc = (
+        "# agent-proxy\n\n"
+        + ("Some unrelated paragraph of project prose. " * 20)
+        + "One of the task kinds is announced by `Monitor started (task X, ...)`. "
+        + ("More unrelated paragraph text follows this line. " * 20)
+    )
+    events = tracker.on_entry(tool_result("toolu_1", doc))
+    assert types_of(events) == ["tool_result"]
+    assert tracker.outstanding()["monitor"] == 0
+    assert tracker.task("X") is None
+
+
+def test_a_truncated_notification_paste_does_not_register_a_task(tracker):
+    """SPEC finding 9: a paste cut off before `</task-notification>` is not
+    a live event.
+
+    Live: an ADE session had a truncated preview of another session's
+    `<task-notification>` pasted into it, cut off before the `<status>` tag.
+    `_absorb_notification` read the missing status as "a monitor mid-event"
+    rather than an incomplete match, and left the task open forever.
+    """
+    running_user_turn(tracker)
+    truncated = (
+        "<task-notification>\n"
+        "<task-id>b6gw65g3a</task-id>\n"
+        "<tool-use-id>toolu_9</tool-use-id>\n"
+        '<summary>Background command "work'
+        # cut off mid-summary, before <status> and the closing tag ever arrive
+    )
+    events = tracker.on_entry(user_text(truncated))
+    assert types_of(events) == []
+    assert tracker.task("b6gw65g3a") is None
+    assert tracker.outstanding()["background"] == 0
+
+
 def test_a_completion_seen_twice_decrements_once(tracker):
     running_user_turn(tracker)
     launch_background(tracker, "bg1", "toolu_1")
