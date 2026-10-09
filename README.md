@@ -115,7 +115,7 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-281 tests, none of which needs a `claude` binary (one of them proves the
+287 tests, none of which needs a `claude` binary (one of them proves the
 subreaper mechanism on the real kernel, in a subprocess). Seven more do, and
 are opt-in twice over — a marker alone deselects nothing on a bare `pytest`, and these
 spend real quota:

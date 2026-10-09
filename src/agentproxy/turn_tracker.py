@@ -96,27 +96,23 @@ MARKER_BASIS = {
 # A background task announces itself in the tool_result of the Bash call that
 # started it, in one of two wordings: `run_in_background: true` produces
 # "Command running in background with ID: <id>", and a foreground command that
-# outlives its timeout produces "was moved to the background (ID: <id>)". The
-# second shape means a task can appear without anyone having asked for one.
+# outlives its timeout produces "Command did not complete within its 120s
+# timeout and was moved to the background (ID: <id>)". The second shape means a
+# task can appear without anyone having asked for one.
 # What the inner writes in a tool_result when it puts work in the background.
 # Keyed by wording because none of it is visible in the `tool_use`: the shell
 # flag is invisible on a timeout promotion, and neither the monitor nor the
 # subagent names its id anywhere else. Each entry yields the id the later
-# `<task-notification>` will be keyed by.
+# `<task-notification>` will be keyed by. Every pattern is applied with
+# `match`, at the start of the tool_result - see `_note_background_launch`.
 _LAUNCH_RES: tuple[tuple[str, "re.Pattern[str]"], ...] = (
-    (TASK_SHELL, re.compile(r"background[^.]*?ID: ([A-Za-z0-9_-]+)")),
+    (TASK_SHELL, re.compile(r"Command\b[^.]*?background[^.]*?ID: ([A-Za-z0-9_-]+)")),
     (TASK_MONITOR, re.compile(r"Monitor started \(task ([A-Za-z0-9_-]+)")),
     (
         TASK_AGENT,
         re.compile(r"Async agent launched successfully.{0,200}?agentId: ([A-Za-z0-9_-]+)", re.S),
     ),
 )
-
-# Comfortably above the longest of the three wordings above (~150 characters
-# in every fixture and live transcript surveyed, and the agent pattern's own
-# `.{0,200}?` gap bounds it further) and far below a file dump that merely
-# quotes one of them - see `_note_background_launch`.
-_LAUNCH_TEXT_MAX_LEN = 400
 
 _NOTIFICATION_TAG_RE = re.compile(
     r"<(task-id|tool-use-id|status|summary|output-file)>(.*?)</\1>", re.DOTALL
@@ -717,20 +713,17 @@ class TurnTracker:
         `outstanding.background` looks wrong. `_absorb_notification` is the
         backstop that keeps the count correct even then.
         """
-        text = _flatten_text(block.get("content"))
-        # A real launch confirmation is a short, self-contained sentence or
-        # two - none of the wordings in `_LAUNCH_RES` run past ~150
-        # characters in any fixture or live transcript surveyed. Searching
-        # unconditionally let a file dump that merely quotes the wording
-        # register a task that was never launched - e.g. a `Bash cat` of this
+        # A real confirmation is the whole tool_result: the inner writes the
+        # wording first, with nothing ahead of it. A file that merely quotes
+        # the wording carries it somewhere inside - e.g. a `Bash cat` of this
         # project's own HANDOFF.md, whose prose documents the exact phrase
-        # `_LAUNCH_RES` looks for (SPEC finding 9). A cap well above any real
-        # confirmation but far below a document dump tells them apart without
-        # having to parse or anchor the wording itself.
-        if len(text) > _LAUNCH_TEXT_MAX_LEN:
-            return []
+        # `_LAUNCH_RES` looks for (SPEC finding 9). So the wording only counts
+        # at the start. Length is no guide: a shell confirmation names its
+        # output file, whose path grows with the project directory's name,
+        # and an async agent's runs to about 1 KB.
+        text = _flatten_text(block.get("content")).lstrip()
         for kind, pattern in _LAUNCH_RES:
-            match = pattern.search(text)
+            match = pattern.match(text)
             if match is not None:
                 break
         else:

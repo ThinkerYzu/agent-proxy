@@ -754,6 +754,96 @@ def test_an_async_subagent_is_a_background_task(tracker):
     assert tracker.outstanding()["background"] == 0
 
 
+# Launch confirmations as the inner really writes them, at full length. The
+# short strings elsewhere in this file hid that a real one runs past 400
+# characters: a shell launch names its output file, whose path grows with the
+# project directory's name, and an async agent's is about 1 KB of boilerplate.
+# Paths are made up; the wording is copied from claude 2.1.295 transcripts.
+_TASKS_DIR = (
+    "/tmp/claude-1000/-home-someone-src-a-project-with-a-fairly-long-name/"
+    "e1f9ae14-47cc-480d-b9c1-4438202ffa42/tasks"
+)
+REAL_SHELL_LAUNCH = (
+    "Command running in background with ID: bxqcv278y. Output is being written "
+    f"to: {_TASKS_DIR}/bxqcv278y.output. You will be notified when it completes. "
+    "To check interim output, use Read on that file path.\n"
+    "Session cwd remains /home/someone/src/a-project-with-a-fairly-long-name; "
+    "directory changes made by the backgrounded command do not apply to "
+    "subsequent commands."
+)
+REAL_TIMEOUT_PROMOTION = (
+    "Command did not complete within its 120s timeout and was moved to the "
+    f"background (ID: bpqg7amhr). Output is being written to: {_TASKS_DIR}/"
+    "bpqg7amhr.output. You will be notified when it completes. To check interim "
+    "output, use Read on that file path.\n"
+    "Session cwd remains /home/someone/src/a-project-with-a-fairly-long-name; "
+    "directory changes made by the backgrounded command do not apply to "
+    "subsequent commands."
+)
+REAL_AGENT_LAUNCH = (
+    "Async agent launched successfully. (This tool result is internal metadata "
+    "— never quote or paste any part of it, including the agentId below, into "
+    "a user-facing reply.)\n"
+    "agentId: aebdbdd791ba8c2a9 (internal ID - do not mention to user. Use "
+    "SendMessage with to: 'aebdbdd791ba8c2a9', summary: '<5-10 word recap>' to "
+    "continue this agent.)\n"
+    "The agent is working in the background. You will be notified automatically "
+    "when it completes. You know nothing about its results until that "
+    "notification arrives — do not report, assume, or predict them; continue "
+    "other work or respond to the user in the meantime.\n"
+    "Do not duplicate this agent's work — avoid working with the same files or "
+    "topics it is using.\n"
+    f"output_file: {_TASKS_DIR}/aebdbdd791ba8c2a9.output\n"
+    "Do NOT Read or tail this file via the shell tool — it is the full subagent "
+    "JSONL transcript and reading it will overflow your context. If the user "
+    "asks for progress, say the agent is still running; you'll get a "
+    "completion notification.\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "task_id", "kind", "count"),
+    [
+        (REAL_SHELL_LAUNCH, "bxqcv278y", "shell", "background"),
+        (REAL_TIMEOUT_PROMOTION, "bpqg7amhr", "shell", "background"),
+        (REAL_AGENT_LAUNCH, "aebdbdd791ba8c2a9", "agent", "agent"),
+    ],
+    ids=["run_in_background", "timeout_promotion", "async_agent"],
+)
+def test_a_full_length_launch_registers_its_task(tracker, text, task_id, kind, count):
+    """A real confirmation is longer than any hand-written test string.
+
+    Decision 9's first version skipped any tool_result over 400 characters,
+    and so missed 149 of the 221 real launches in a local corpus - every one
+    of these three among them. The task only appeared when it ended.
+    """
+    assert len(text) > 400
+    running_user_turn(tracker)
+    tracker.on_entry(assistant_tool_use("toolu_1", "work", background=False))
+    events = tracker.on_entry(tool_result("toolu_1", text))
+    assert types_of(events) == ["task_start", "tool_result"]
+    assert events[0]["task"] == {"id": task_id, "kind": kind}
+    assert tracker.outstanding()[count] == 1
+
+
+def test_a_short_result_quoting_the_launch_wording_does_not_register_a_task(tracker):
+    """The wording counts only where a real confirmation puts it: first.
+
+    A `grep` over this project's docs is as short as a real launch, so no
+    length rule could tell the two apart; where the wording sits does.
+    """
+    running_user_turn(tracker)
+    tracker.on_entry(assistant_tool_use("toolu_1", "grep the docs", background=False))
+    grep = (
+        "HANDOFF.md:42: announced by `Monitor started (task X, ...)`\n"
+        "API.md:7: prints `Command running in background with ID: b1`\n"
+    )
+    events = tracker.on_entry(tool_result("toolu_1", grep))
+    assert types_of(events) == ["tool_result"]
+    assert tracker.task("X") is None
+    assert tracker.task("b1") is None
+
+
 def test_an_event_for_an_unseen_monitor_still_announces_it(tracker):
     """So that a `caused_by` never names a task the client was not told about.
 
