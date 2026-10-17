@@ -12,12 +12,18 @@ what moves a turn and `fallback.py` for what ends one no marker ended.
 ## Invocation
 
 ```bash
-agent-proxy [claude arguments...]
+agent-proxy [--agent claude|codex] [agent arguments...]
 ```
 
-The proxy spawns one interactive `claude` on a pty, reads line-delimited JSON
-commands on stdin, and writes line-delimited JSON messages on stdout. One
-client per process; the client owns the process's lifetime.
+The proxy spawns one inner agent, reads line-delimited JSON commands on
+stdin, and writes line-delimited JSON messages on stdout. One client per
+process; the client owns the process's lifetime.
+
+`--agent` is the one argument the proxy keeps for itself. `claude`, the
+default, is an interactive `claude` on a pty, and everything below this
+section describes it unless it says otherwise. `codex` is `codex app-server`
+over JSON-RPC, with the same commands and messages; what differs is in
+[The codex agent](#the-codex-agent).
 
 Arguments the proxy does not recognise go to the inner `claude`, so
 `agent-proxy --resume 4f0d… --model opus` works. Four rules apply to that
@@ -254,7 +260,7 @@ What a client may rely on:
 | `thinking` | assistant reasoning | `text` |
 | `tool_use` | the assistant called a tool | `tool`, `input`, `tool_use_id` |
 | `tool_result` | a tool returned | `tool_use_id`, `content`, `is_error` |
-| `turn_end` | a turn finished | `basis`, `outcome`, `usage` |
+| `turn_end` | a turn finished | `basis`, `outcome`, `usage`; `error` (codex only) — the agent's own reason a turn failed |
 | `task_start` | background work was launched | `task` (`{id, kind}`), `summary` (string or null), `command` (string or null) |
 | `task_end` | background work ended | `task` (`{id, kind}`), `status`, `exit_code` (int or null), `output` (string or null) |
 | `orphan_start` | a process was reparented to the proxy | `process` (`{pid, command}`); see [Orphaned processes](#orphaned-processes) |
@@ -353,6 +359,108 @@ it moves to `orphan` on its own the moment the parent exits.
 
 Off Linux, or where the `prctl` fails, the proxy runs as before: no `orphan`
 key on any message, no `orphans` in `state`, and nothing adopted.
+
+## The codex agent
+
+`agent-proxy --agent codex` drives `codex app-server`, the JSON-RPC interface
+codex's own VS Code extension is built on. Codex states its turn boundaries
+itself, so there is no screen and no transcript on this path, and nothing is
+matched by content. A client reads the same stream; this section is
+everything that differs.
+
+### Billing
+
+The session bills the ChatGPT plan codex is signed in with, exactly as the
+codex TUI does. The proxy removes `OPENAI_API_KEY` and `CODEX_API_KEY` from
+the app-server's environment, and refuses to start (an `error`, exit 2) if
+codex is signed in any other way, such as with a key saved by `codex login
+--with-api-key`. Run `codex login` with ChatGPT first.
+
+### Arguments
+
+Arguments are mapped onto codex's own parameters or refused at startup.
+None is passed through unread, and none is dropped: a dropped option would
+run a different agent from the one the host configured.
+
+| Argument | Under `--agent codex` |
+|---|---|
+| `--model <m>`, `-m <m>` | the thread's model |
+| `-c key=value` | passed to `codex app-server` as a config override (not claude's short `--continue`) |
+| `--sandbox <mode>`, `-s <mode>` | the thread's sandbox: `read-only`, `workspace-write` or `danger-full-access`; codex's configured default otherwise |
+| `--append-system-prompt <text>` | the thread's `developerInstructions` |
+| `--dangerously-skip-permissions` | accepted; the thread already never asks for approval |
+| `--resume`, `--continue`, `--fork-session` | see [Sessions](#codex-sessions) |
+| `--session-id` | refused: codex mints its own ids |
+| `--allowedTools`, `--disallowedTools`, `--mcp-config` | refused: codex has no per-session equivalent |
+| anything else | refused, naming the argument |
+
+A refused argument is a lone `error` message and exit status 2, before any
+`ready`, as for claude's conflicting session flags.
+
+### Codex sessions
+
+The session id is codex's thread id, and `ready` says `"agent": "codex"`. A
+claude session id does not resume under codex, or the reverse: record the
+agent next to each id.
+
+| You run | You get |
+|---|---|
+| `agent-proxy --agent codex` | a new thread |
+| `… --resume <id>` | that thread, continued; an id codex does not know is an `error`, exit 2 |
+| `… --continue`, or `--resume` alone | the newest thread in this directory, or a new one if there is none |
+| `… --resume <id> --fork-session` | a new thread branched off that one; `ready` names the fork |
+
+### What the stream says differently
+
+- **`background` and `monitor` are always 0.** Codex keeps no list of
+  background commands: a model asked to background something runs
+  `nohup … &`, which nothing reports ending. Such a process is counted under
+  `orphan` once its shell exits. The keys are still present, so a client
+  testing every count needs no change.
+- **A subagent is an `agent` task**, `task.id` its thread id and `summary`
+  its path (`/root/pong`), from its start to its end. Its own turns are not
+  reported as turns.
+- **A cancelled turn's command keeps running.** `turn/interrupt` ends the
+  turn, not the command. A command still running when its turn ends becomes
+  a `background` task (`kind: "shell"`, `command` set), and its `task_end`
+  arrives when codex reports it finished, with the real `exit_code` and the
+  last 256 characters of its output.
+- **Tool names are codex item types**: `commandExecution`, `fileChange`,
+  `mcpToolCall`, `webSearch` and so on. `input` is the item's own fields;
+  `tool_result.content` is the command's output, or the completed item.
+- **`thinking`** appears only when codex reports a reasoning summary, which
+  it often does not.
+- **No approval is ever pending.** The thread is opened with
+  `approvalPolicy: "never"`, and any request codex sends anyway is declined.
+- **Like claude, codex orphans a shell of its own** on the first command of
+  a session (it sets up the shell environment), so expect a brief
+  `orphan_start`/`orphan_end` pair there.
+
+### End of turn
+
+| `basis` | Condition | `outcome` |
+|---|---|---|
+| `codex:completed` | codex's `turn/completed`, status `completed` | `success` |
+| `codex:interrupted` | status `interrupted` | `cancelled` after a `cancel`, otherwise `error` |
+| `codex:failed` | status `failed`; `error` carries codex's reason | `error` |
+| `cancel:withdrawn` | a queued turn cancelled before it was sent | `cancelled` |
+| `fallback:stalled` | a turn running and the app-server silent for `AGENTPROXY_FALLBACK_STALL_S` | `success` |
+| `fallback:unmatched` | a prompt sent and never answered for `AGENTPROXY_FALLBACK_UNMATCHED_S` | `success` |
+| `error` | the session failed: the app-server exited, or reported a system error | `error` |
+
+`fallback:idle` and `fallback:quiet` read a screen and a pty, so they never
+appear on this path. Cancelling an unowned turn is refused, as for claude.
+
+### Environment
+
+| Variable | Default | What it does |
+|---|---|---|
+| `AGENTPROXY_CODEX_BIN` | `codex` | the codex executable |
+| `AGENTPROXY_CODEX_STARTUP_S` | `60` | how long each startup request (`initialize`, `account/read`, opening the thread) may take |
+
+`AGENTPROXY_LOG`, `AGENTPROXY_FALLBACK_STALL_S`,
+`AGENTPROXY_FALLBACK_UNMATCHED_S` and `AGENTPROXY_KILL_ORPHANS` apply as for
+claude; the pty and dialog settings do not.
 
 ## The shape of one turn
 
@@ -532,4 +640,4 @@ for a client:
 - **Ignore unknown message types and unknown fields.** New types are added
   when `claude` grows a shape worth reporting; the envelope does not change.
 - **`basis` values are open.** Match on the `marker:` / `fallback:` /
-  `cancel:` prefix rather than on the full set.
+  `cancel:` / `codex:` prefix rather than on the full set.

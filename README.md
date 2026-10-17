@@ -1,7 +1,8 @@
 # agent-proxy
 
 A stdio wrapper around an interactive `claude` TUI that **states** turn
-boundaries instead of leaving clients to infer them. It replaces claudejson, an
+boundaries instead of leaving clients to infer them. With `--agent codex` it
+wraps `codex app-server` instead, behind the same protocol. It replaces claudejson, an
 earlier unpublished wrapper, inheriting its pty and transcript machinery and
 replacing its turn accounting.
 
@@ -40,6 +41,12 @@ message and always carries a real `session_id`, including for `--continue`,
 a bare `--resume`, and `--fork-session`. Keep that id and `agent-proxy
 --resume <id>` picks the conversation up in a later process; see
 [API.md](API.md#sessions) for the full table.
+
+`agent-proxy --agent codex` runs `codex app-server` as the inner agent
+instead, signed in with ChatGPT; the client reads the same stream, and
+`ready` says `"agent": "codex"`. Its arguments are mapped onto codex's own
+or refused, and a few counts read differently, since codex keeps no list of
+background commands: see [API.md](API.md#the-codex-agent).
 
 Every requirement, constraint and success criterion that can be checked
 without a client has a test naming it, in `tests/requirements/`.
@@ -93,6 +100,11 @@ tied to the background command whose completion woke it.
 | `src/agentproxy/turn_tracker.py` | the turn table, the task table, binding and end-of-turn; fed by transcript entries, or by stated facts for an agent that reports its own boundaries |
 | `src/agentproxy/protocol.py` | the envelope and the stdout writer |
 | `src/agentproxy/commands.py` | the stdin command parser, the same for every inner agent |
+| `src/agentproxy/codex_cli.py` | the process boundary for `--agent codex`: startup, the app-server's pipes, the loop |
+| `src/agentproxy/codex_proxy.py` | the codex wiring: send gate, cancel, the two fallbacks, refused server requests |
+| `src/agentproxy/codex_session.py` | codex notifications as turns and tasks, no I/O |
+| `src/agentproxy/app_server.py` | JSON-RPC with the app-server: ids, responses, server requests |
+| `src/agentproxy/inner_codex.py` | codex arguments mapped or refused, the environment, which thread to open |
 | `src/agentproxy/proxy.py` | the wiring — every decision, no process IO |
 | `src/agentproxy/cli.py` | the process boundary — pty, transcript, stdout, signals |
 | `src/agentproxy/liveness.py` | idle or active, settled, and the two dialogs that block input |
@@ -105,6 +117,7 @@ tied to the background command whose completion woke it.
 | `tools/make_synthetic_fixture.py` | build the test session out of real entry shapes |
 | `tools/capture_fixture.py` | cut a fixture out of a real session transcript |
 | `tests/harness.py` | a proxied session with the pty taken out, shared by the suites below |
+| `tests/fake_app_server.py`, `tests/codex_harness.py` | a stand-in `codex app-server` built from recorded message shapes, and a codex session driven against it |
 | `tests/requirements/` | one test group per SPEC requirement, constraint and success criterion |
 | `tests/requirements/reference_client.py` | a client with no inference layer, used to check the protocol keeps its word |
 
