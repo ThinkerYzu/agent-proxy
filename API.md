@@ -247,7 +247,7 @@ What a client may rely on:
 
 | `type` | When | Fields beyond the envelope |
 |---|---|---|
-| `ready` | first message of the session, always `seq` 1 | `session_id` — always a real id, see [Sessions](#sessions) |
+| `ready` | first message of the session, always `seq` 1 | `session_id` — always a real id, see [Sessions](#sessions); `agent` — `"claude"`, the inner agent that id belongs to |
 | `ack` | a `submit` or a `cancel` was accepted | `ref` if the command carried one (`turn` carries the new id, or the id being cancelled) |
 | `turn_start` | a turn began running | `caused_by` when a background task woke it |
 | `text` | assistant prose | `text` |

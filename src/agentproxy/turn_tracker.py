@@ -351,6 +351,121 @@ class TurnTracker:
         return self._end_turn(turn, BASIS_RESTORED, OUTCOME_CANCELLED)
 
     # ------------------------------------------------------------------
+    # Structured side
+    # ------------------------------------------------------------------
+    #
+    # For an inner agent that states its own turn and task boundaries, such
+    # as `codex app-server`. The caller has already decided what happened;
+    # these write it into the same tables the transcript side writes, so the
+    # counts, `snapshot`, `cancel` and `fail_session` work unchanged. Each one
+    # refuses, with a log line and no events, a fact that contradicts the
+    # tables, rather than corrupt them.
+
+    def bind_typed(self) -> list[dict]:
+        """Make the typed turn the running one, and announce it.
+
+        The structured counterpart of a transcript entry matching the typed
+        prompt: the inner said which prompt started, so nothing is compared.
+        """
+        turn = self._typed_turn
+        if turn is None:
+            log.log_text("tracker", "bind_typed with no typed turn")
+            return []
+        if self._running_turn is not None:
+            log.log_text(
+                "tracker", f"bind_typed {turn.id} while {self._running_turn.id} runs"
+            )
+            return []
+        self._typed_turn = None
+        turn.state = STATE_RUNNING
+        self._running_turn = turn
+        return [self._turn_start(turn)]
+
+    def open_unowned(self, caused_by: Optional[str] = None) -> tuple[Optional[Turn], list[dict]]:
+        """Open a running turn the proxy did not prompt, and announce it.
+
+        Returns the turn with its `turn_start`, or (None, []) when a turn is
+        already running: the inner runs one turn at a time, so a second one
+        is a fact this table cannot hold.
+        """
+        if self._running_turn is not None:
+            log.log_text(
+                "tracker", f"unowned turn reported while {self._running_turn.id} runs"
+            )
+            return None, []
+        self._turn_seq += 1
+        turn = Turn(
+            id=f"t-{self._turn_seq}",
+            kind=KIND_UNOWNED,
+            state=STATE_RUNNING,
+            caused_by=caused_by,
+        )
+        self._turns[turn.id] = turn
+        self._running_turn = turn
+        return turn, [self._turn_start(turn)]
+
+    def end_turn(
+        self,
+        turn_id: str,
+        basis: str,
+        outcome: str,
+        usage: Optional[dict] = None,
+        error: Optional[str] = None,
+    ) -> list[dict]:
+        """End the named turn, whatever state it is in, and return its `turn_end`.
+
+        `error` is the inner's own description of a failed turn, carried on
+        the `turn_end` when given. An unknown or already-ended turn returns
+        no events: a late or repeated ending is ignored, never re-announced.
+        """
+        turn = self._turns.get(turn_id)
+        if turn is None or turn.state == STATE_ENDED:
+            log.log_text("tracker", f"end_turn for {turn_id}, which is not open")
+            return []
+        return self._end_turn(turn, basis, outcome, usage, error)
+
+    def start_task(
+        self,
+        task_id: str,
+        kind: str,
+        summary: Optional[str] = None,
+        command: Optional[str] = None,
+    ) -> list[dict]:
+        """Register background work the inner reported, and return its `task_start`.
+
+        A task id seen before returns no events, so a repeated report cannot
+        count the same work twice.
+        """
+        if task_id in self._tasks:
+            return []
+        task = BackgroundTask(id=task_id, kind=kind, summary=summary, command=command)
+        self._tasks[task_id] = task
+        return [self._task_start_event(task)]
+
+    def end_task(
+        self,
+        task_id: str,
+        status: str,
+        exit_code: Optional[int] = None,
+        output: Optional[str] = None,
+    ) -> list[dict]:
+        """End background work the inner reported finished, and return its `task_end`.
+
+        `output` is the work's own output, already in hand, so the event
+        carries it in place of the `output_file` path the transcript side
+        leaves for `Proxy` to read. An unknown or finished task returns no
+        events.
+        """
+        task = self._tasks.get(task_id)
+        if task is None or task.state == TASK_DONE:
+            log.log_text("tracker", f"end_task for {task_id}, which is not running")
+            return []
+        event = self._end_task(task, status, exit_code)
+        del event["output_file"]
+        event["output"] = output
+        return [event]
+
+    # ------------------------------------------------------------------
     # Transcript side
     # ------------------------------------------------------------------
 
@@ -679,6 +794,7 @@ class TurnTracker:
         basis: str,
         outcome: str,
         usage: Optional[dict] = None,
+        error: Optional[str] = None,
     ) -> list[dict]:
         turn.state = STATE_ENDED
         turn.basis = basis
@@ -690,15 +806,16 @@ class TurnTracker:
         full_usage = dict(usage or {})
         if turn.output_tokens:
             full_usage["output_tokens"] = turn.output_tokens
-        return [
-            {
-                "type": "turn_end",
-                "turn": turn.ref(),
-                "basis": basis,
-                "outcome": outcome,
-                "usage": full_usage,
-            }
-        ]
+        event = {
+            "type": "turn_end",
+            "turn": turn.ref(),
+            "basis": basis,
+            "outcome": outcome,
+            "usage": full_usage,
+        }
+        if error is not None:
+            event["error"] = error
+        return [event]
 
     # ------------------------------------------------------------------
     # Background tasks

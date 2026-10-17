@@ -90,8 +90,9 @@ tied to the background command whose completion woke it.
 | `API.md` | the stdio protocol reference for clients |
 | `RELEASING.md` | how a release is cut, and what a version number promises |
 | `.github/workflows/` | CI on every push, a GitHub Release on every `v*` tag |
-| `src/agentproxy/turn_tracker.py` | the turn table, the task table, binding and end-of-turn |
+| `src/agentproxy/turn_tracker.py` | the turn table, the task table, binding and end-of-turn; fed by transcript entries, or by stated facts for an agent that reports its own boundaries |
 | `src/agentproxy/protocol.py` | the envelope and the stdout writer |
+| `src/agentproxy/commands.py` | the stdin command parser, the same for every inner agent |
 | `src/agentproxy/proxy.py` | the wiring — every decision, no process IO |
 | `src/agentproxy/cli.py` | the process boundary — pty, transcript, stdout, signals |
 | `src/agentproxy/liveness.py` | idle or active, settled, and the two dialogs that block input |

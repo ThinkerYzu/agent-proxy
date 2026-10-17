@@ -18,11 +18,11 @@ back instead of writing an interruption entry.
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Callable, Optional, Sequence
 
 from agentproxy import log
+from agentproxy.commands import CANCEL, STATUS, SUBMIT, Rejection, parse_command, tagged
 from agentproxy.fallback import BASIS_UNMATCHED, FallbackEot
 from agentproxy.liveness import Liveness
 from agentproxy.orphans import OrphanExit, OrphanReaper
@@ -35,6 +35,9 @@ from agentproxy.turn_tracker import (
     TurnTracker,
 )
 
+
+# The name `ready` gives this backend's inner agent.
+AGENT_CLAUDE = "claude"
 
 # `task_end.output` is a preview, not a log dump — the wire carries the last
 # this many characters of the task's output file, which is where a build or
@@ -55,20 +58,6 @@ CLEAR_SETTLE_S = 0.6
 # loudly. A gate held shut forever is a wedged session; a prompt typed on top
 # of leftover text is caught downstream as an unmatched turn.
 CLEAR_ATTEMPTS = 3
-
-
-def _tagged(events: list[dict], ref: object) -> list[dict]:
-    """Stamp a command's `ref` on the messages answering it.
-
-    Echoed verbatim, whatever the client sent, and omitted entirely when it
-    sent nothing — the field is optional, so a client that does not correlate
-    sees exactly the stream it saw before.
-    """
-    if ref is None:
-        return events
-    for event in events:
-        event["ref"] = ref
-    return events
 
 
 def _orphan_end(ending: OrphanExit) -> dict:
@@ -136,9 +125,10 @@ class Proxy:
 
         Always the first message on the stream, and its `session_id` is always
         a real id — it is what a client records to resume this conversation in
-        a later process.
+        a later process. `agent` says which inner agent the id belongs to: a
+        session id resumes only under the agent that made it.
         """
-        self._emit([{"type": "ready", "session_id": session_id}])
+        self._emit([{"type": "ready", "session_id": session_id, "agent": AGENT_CLAUDE}])
 
     def fail(self, reason: str) -> None:
         """Close out a session that cannot continue.
@@ -181,48 +171,36 @@ class Proxy:
         a rejected `submit` produces an `error` rather than an `ack`, and a
         client counting acks then binds every later prompt to the wrong turn.
         """
-        try:
-            command = json.loads(line)
-        except json.JSONDecodeError:
-            return self._reject("stdin line is not JSON")
-        if not isinstance(command, dict):
-            return self._reject("stdin line is not a JSON object")
-
-        kind = command.get("type")
-        ref = command.get("ref")
-        if kind == "submit":
-            text = command.get("text")
-            if not isinstance(text, str) or not text.strip():
-                return self._reject("submit needs a non-empty 'text'", ref)
-            turn, events = self._tracker.submit(text)
-            self._emit(_tagged(events, ref))
+        command = parse_command(line)
+        if isinstance(command, Rejection):
+            return self._reject(command.reason, command.ref)
+        if command.kind == SUBMIT:
+            turn, events = self._tracker.submit(command.text)
+            self._emit(tagged(events, command.ref))
             return self._queue.accept(turn)
-        if kind == "status":
+        if command.kind == STATUS:
             state = {"type": "state", **self._tracker.snapshot()}
             if self._reaper is not None:
                 state["orphans"] = [o.to_wire() for o in self._reaper.alive()]
-            self._emit(_tagged([state], ref))
+            self._emit(tagged([state], command.ref))
             return None
-        if kind == "cancel":
-            return self._cancel(command.get("turn"), ref)
-        return self._reject(f"unknown command type: {kind!r}", ref)
+        assert command.kind == CANCEL
+        return self._cancel(command.turn, command.ref)
 
-    def _cancel(self, turn_id: object, ref: object) -> None:
+    def _cancel(self, turn_id: str, ref: object) -> None:
         """Answer a `cancel`: `ack` it and act on the turn's state.
 
         The ack says the request was taken, not that the turn has ended —
         that is the `turn_end`, which for a queued turn follows in the same
         batch and for a running one arrives when the inner is seen to stop.
         """
-        if not isinstance(turn_id, str) or not turn_id:
-            return self._reject("cancel needs a 'turn' id", ref)
         try:
             action, events = self._tracker.cancel(turn_id)
         except CancelError as why:
             return self._reject(str(why), ref)
         turn = self._tracker.turn(turn_id)
         assert turn is not None
-        self._emit(_tagged([{"type": "ack", "turn": turn.ref()}], ref))
+        self._emit(tagged([{"type": "ack", "turn": turn.ref()}], ref))
         if action == CANCEL_WITHDRAWN:
             self._queue.withdraw(turn_id)
             log.log_text("proxy", f"{turn_id} withdrawn before it was typed")
@@ -474,5 +452,5 @@ class Proxy:
         left waiting for an `ack` that will never come.
         """
         log.log_text("proxy", f"rejected: {reason}")
-        self._emit(_tagged([{"type": "error", "error": reason}], ref))
+        self._emit(tagged([{"type": "error", "error": reason}], ref))
         return None

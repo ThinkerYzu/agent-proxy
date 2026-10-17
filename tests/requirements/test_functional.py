@@ -870,6 +870,12 @@ def test_requirement_12_the_session_id_is_the_first_thing_a_client_reads(session
     assert first["session_id"] == "session-under-test"
 
 
+def test_requirement_15_ready_names_the_agent_the_session_belongs_to(session):
+    """A session id resumes only under the agent that made it, so the client
+    is told which agent that is alongside the id it records."""
+    assert session.messages()[0]["agent"] == "claude"
+
+
 def test_requirement_12_every_invocation_names_a_session(tmp_path):
     """"Always" is the load-bearing word: the invocations that could not name
     a session before are exactly the recovery ones, so a null id would be
