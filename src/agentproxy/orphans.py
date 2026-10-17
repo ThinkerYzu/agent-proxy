@@ -90,6 +90,17 @@ class OrphanExit:
     signal: Optional[int] = None
 
 
+def orphan_end_event(ending: OrphanExit) -> dict:
+    """The `orphan_end` message for one adopted process that ended or was let go."""
+    return {
+        "type": "orphan_end",
+        "process": ending.process.to_wire(),
+        "status": ending.status,
+        "exit_code": ending.exit_code,
+        "signal": ending.signal,
+    }
+
+
 class OrphanReaper:
     """The proxy's adopted children: who is alive, who just arrived, who just left.
 

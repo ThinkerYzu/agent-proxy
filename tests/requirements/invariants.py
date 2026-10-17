@@ -80,16 +80,26 @@ def end_of_turn_is_typed(messages: list[dict]) -> None:
     since requirement 14: evidence that a cancelled turn stopped, read off
     the screen or the queue rather than the transcript. `cancelled` is the
     outcome that goes with it, and with the `marker:interrupted` entry.
+    `codex:` is the fourth, since requirement 15: a codex turn's own
+    `turn/completed` status, tier 1 for that agent, and `codex:interrupted`
+    is how a cancelled codex turn ends.
     """
     for message in messages:
         if message["type"] != "turn_end":
             continue
         basis = message["basis"]
         assert message["turn"]["kind"] in TURN_KINDS, message
-        assert basis == "error" or basis.startswith(("marker:", "fallback:", "cancel:")), message
+        assert basis == "error" or basis.startswith(
+            ("marker:", "fallback:", "cancel:", "codex:")
+        ), message
         assert message["outcome"] in {"success", "error", "cancelled"}, message
         if message["outcome"] == "cancelled":
-            assert basis in {"marker:interrupted", "cancel:restored", "cancel:withdrawn"}, message
+            assert basis in {
+                "marker:interrupted",
+                "cancel:restored",
+                "cancel:withdrawn",
+                "codex:interrupted",
+            }, message
         else:
             assert not basis.startswith("cancel:") and basis != "marker:interrupted", message
         assert isinstance(message["usage"], dict), message

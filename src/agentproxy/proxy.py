@@ -25,7 +25,7 @@ from agentproxy import log
 from agentproxy.commands import CANCEL, STATUS, SUBMIT, Rejection, parse_command, tagged
 from agentproxy.fallback import BASIS_UNMATCHED, FallbackEot
 from agentproxy.liveness import Liveness
-from agentproxy.orphans import OrphanExit, OrphanReaper
+from agentproxy.orphans import OrphanReaper, orphan_end_event
 from agentproxy.protocol import Emitter
 from agentproxy.submit_queue import SubmitQueue
 from agentproxy.turn_tracker import (
@@ -58,16 +58,6 @@ CLEAR_SETTLE_S = 0.6
 # loudly. A gate held shut forever is a wedged session; a prompt typed on top
 # of leftover text is caught downstream as an unmatched turn.
 CLEAR_ATTEMPTS = 3
-
-
-def _orphan_end(ending: OrphanExit) -> dict:
-    return {
-        "type": "orphan_end",
-        "process": ending.process.to_wire(),
-        "status": ending.status,
-        "exit_code": ending.exit_code,
-        "signal": ending.signal,
-    }
 
 
 class Proxy:
@@ -144,7 +134,7 @@ class Proxy:
         self._emit(self._tracker.fail_session(reason))
         if self._reaper is not None:
             self._emit(
-                [_orphan_end(e) for e in self._reaper.shutdown(kill=self._kill_orphans)]
+                [orphan_end_event(e) for e in self._reaper.shutdown(kill=self._kill_orphans)]
             )
 
     @property
@@ -413,7 +403,7 @@ class Proxy:
         arrived, ended = self._reaper.poll()
         self._emit(
             [{"type": "orphan_start", "process": o.to_wire()} for o in arrived]
-            + [_orphan_end(e) for e in ended]
+            + [orphan_end_event(e) for e in ended]
         )
 
     # ------------------------------------------------------------------

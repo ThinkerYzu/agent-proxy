@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from typing import IO, Optional, Sequence
 
 from agentproxy import inner_claude, log, orphans
+from agentproxy.codex_cli import serve_codex
+from agentproxy.codex_proxy import AGENT_CODEX
 from agentproxy.fallback import FallbackEot
 from agentproxy.io_loop import (
     RESUBMIT_QUIESCENCE_S,
@@ -32,7 +34,7 @@ from agentproxy.io_loop import (
 from agentproxy.liveness import Liveness
 from agentproxy.orphans import OrphanReaper
 from agentproxy.protocol import Emitter
-from agentproxy.proxy import Proxy
+from agentproxy.proxy import AGENT_CLAUDE, Proxy
 from agentproxy.pty_driver import PtyDriver
 from agentproxy.screen_model import ScreenModel
 from agentproxy.submit_queue import SubmitQueue
@@ -68,16 +70,26 @@ _ABORT_REASONS = {
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    return argparse.ArgumentParser(
+    # No abbreviations: every argument the proxy does not claim belongs to the
+    # inner agent, and a prefix match would quietly claim one of those.
+    parser = argparse.ArgumentParser(
         prog="agent-proxy",
+        allow_abbrev=False,
         description=(
-            "Turn-aware JSON stream around an interactive claude TUI. Reads "
+            "Turn-aware JSON stream around an inner coding agent. Reads "
             "{\"type\":\"submit\",\"text\":...} and {\"type\":\"status\"} on "
             "stdin; writes turn_start / turn_end / text / tool_use and the "
-            "three outstanding counts on stdout. Unrecognised arguments are "
-            "forwarded to the inner `claude`."
+            "outstanding counts on stdout. Unrecognised arguments go to the "
+            "inner agent: forwarded to `claude`, or mapped for codex."
         ),
     )
+    parser.add_argument(
+        "--agent",
+        choices=(AGENT_CLAUDE, AGENT_CODEX),
+        default=AGENT_CLAUDE,
+        help="the inner agent: an interactive claude TUI (default), or codex app-server",
+    )
+    return parser
 
 
 def _read_task_output(path: str) -> Optional[str]:
@@ -259,7 +271,9 @@ def serve(
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    _, passthrough = _build_parser().parse_known_args(argv)
+    args, passthrough = _build_parser().parse_known_args(argv)
+    if args.agent == AGENT_CODEX:
+        return serve_codex(sys.stdin.buffer, sys.stdout, passthrough=passthrough)
     return serve(sys.stdin.buffer, sys.stdout, passthrough=passthrough)
 
 

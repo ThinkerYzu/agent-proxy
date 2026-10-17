@@ -107,6 +107,10 @@ class AppServerPeer:
         """Answer a `ServerRequest`."""
         self._send({"id": request_id, "result": result})
 
+    def respond_error(self, request_id: object, code: int, message: str) -> None:
+        """Refuse a `ServerRequest` this side cannot serve at all."""
+        self._send({"id": request_id, "error": {"code": code, "message": message}})
+
     def feed(self, data: bytes) -> list[Message]:
         """Take bytes read from the server and return the whole messages they complete.
 
