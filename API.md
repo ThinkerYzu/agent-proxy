@@ -386,9 +386,9 @@ run a different agent from the one the host configured.
 |---|---|
 | `--model <m>`, `-m <m>` | the thread's model |
 | `-c key=value` | passed to `codex app-server` as a config override (not claude's short `--continue`) |
-| `--sandbox <mode>`, `-s <mode>` | the thread's sandbox: `read-only`, `workspace-write` or `danger-full-access`; codex's configured default otherwise |
+| `--sandbox <mode>`, `-s <mode>` | the thread's sandbox: `read-only`, `workspace-write` or `danger-full-access`; `danger-full-access` without it, as claude runs with permissions skipped |
 | `--append-system-prompt <text>` | the thread's `developerInstructions` |
-| `--dangerously-skip-permissions` | accepted; the thread already never asks for approval |
+| `--dangerously-skip-permissions` | accepted; the thread already never asks for approval and has full access |
 | `--resume`, `--continue`, `--fork-session` | see [Sessions](#codex-sessions) |
 | `--session-id` | refused: codex mints its own ids |
 | `--allowedTools`, `--disallowedTools`, `--mcp-config` | refused: codex has no per-session equivalent |

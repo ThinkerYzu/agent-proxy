@@ -15,11 +15,11 @@ from agentproxy.inner_codex import (
 CWD = "/home/u/proj"
 
 
-def test_no_arguments_start_a_new_thread_that_never_asks_for_approval():
+def test_no_arguments_start_a_new_thread_with_full_access_that_never_asks_for_approval():
     p = plan([], CWD)
     assert p.server_argv == ["codex", "app-server"]
     assert p.open_method == "thread/start"
-    assert p.open_params == {"cwd": CWD, "approvalPolicy": "never"}
+    assert p.open_params == {"cwd": CWD, "approvalPolicy": "never", "sandbox": "danger-full-access"}
     assert not p.latest
 
 
@@ -47,7 +47,12 @@ def test_a_config_override_goes_to_the_app_server_itself():
 
 
 def test_skipping_permissions_is_accepted_because_it_is_already_so():
-    assert plan(["--dangerously-skip-permissions"], CWD).open_params["approvalPolicy"] == "never"
+    params = plan(["--dangerously-skip-permissions"], CWD).open_params
+    assert (params["approvalPolicy"], params["sandbox"]) == ("never", "danger-full-access")
+
+
+def test_a_resumed_thread_gets_full_access_too():
+    assert plan(["--resume", "01a1-th"], CWD).open_params["sandbox"] == "danger-full-access"
 
 
 def test_resume_with_an_id_resumes_that_thread():
@@ -78,7 +83,7 @@ def test_the_newest_thread_is_resumed_or_forked():
 def test_with_no_thread_in_the_directory_a_new_one_starts():
     p = with_latest(plan(["--continue", "--model", "m"], CWD), {"data": []})
     assert p.open_method == "thread/start"
-    assert p.open_params == {"cwd": CWD, "approvalPolicy": "never", "model": "m"}
+    assert p.open_params == {"cwd": CWD, "approvalPolicy": "never", "sandbox": "danger-full-access", "model": "m"}
 
 
 def test_the_lookup_asks_for_this_directory_newest_first():

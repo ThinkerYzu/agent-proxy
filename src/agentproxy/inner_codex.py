@@ -34,6 +34,10 @@ APPROVAL_POLICY = "never"
 
 _SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
 
+# The sandbox a thread gets unless `--sandbox` says otherwise: full access,
+# as the inner claude runs with `--dangerously-skip-permissions` added.
+DEFAULT_SANDBOX = "danger-full-access"
+
 # Claude options with no per-session codex equivalent. Refused by name, so a
 # host learns which of its settings codex cannot honour.
 _CLAUDE_ONLY = frozenset(
@@ -79,14 +83,15 @@ def plan(argv: Sequence[str], cwd: str, binary: str = "codex") -> CodexPlan:
     """Turn the caller's arguments into a `CodexPlan`, or raise `CodexArgumentError`.
 
     Accepted: `--model`/`-m`, `-c key=value` (to the app-server),
-    `--sandbox`/`-s`, `--append-system-prompt`, `--dangerously-skip-permissions`
-    (what `approvalPolicy: never` already says), and the session flags
+    `--sandbox`/`-s` (`DEFAULT_SANDBOX` without it), `--append-system-prompt`,
+    `--dangerously-skip-permissions` (what `approvalPolicy: never` and the
+    default sandbox already say), and the session flags
     `--resume [id]`, `--continue` and `--fork-session`. Anything else is
     refused, naming the argument. `-c` is codex's config override here, not
     claude's short form of `--continue`. `binary` is the codex executable.
     """
     server_argv = [binary, "app-server"]
-    options: dict = {"cwd": cwd, "approvalPolicy": APPROVAL_POLICY}
+    options: dict = {"cwd": cwd, "approvalPolicy": APPROVAL_POLICY, "sandbox": DEFAULT_SANDBOX}
     resume: Optional[str] = None
     resume_latest = False
     fork = False
