@@ -129,18 +129,23 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-287 tests, none of which needs a `claude` binary (one of them proves the
-subreaper mechanism on the real kernel, in a subprocess). Seven more do, and
-are opt-in twice over — a marker alone deselects nothing on a bare `pytest`, and these
-spend real quota:
+387 tests, none of which needs a `claude` or `codex` binary (one of them
+proves the subreaper mechanism on the real kernel, in a subprocess; the codex
+ones run against `tests/fake_app_server.py`). Ten more do — seven against
+`claude`, three against `codex` — and are opt-in twice over: a marker alone
+deselects nothing on a bare `pytest`, and these spend real quota:
 
 ```bash
-AGENTPROXY_RUN_LIVE=1 pytest -q -m live
+AGENTPROXY_RUN_LIVE=1 pytest -q -m live                               # both
+AGENTPROXY_RUN_LIVE=1 pytest -q -m live tests/live/test_live_session.py  # claude
+AGENTPROXY_RUN_LIVE=1 pytest -q -m live tests/live/test_live_codex.py    # codex
 ```
 
-Worth running when `claude` changes version: it is the only test that reads
-the entry shapes the installed binary actually writes, rather than the ones
-the fixtures model.
+The codex tests are skipped when there is no `codex` on the path, and need it
+signed in with ChatGPT. Worth running when either binary changes version:
+they are the only tests that read what the installed binary actually writes
+— `claude`'s transcript entries, `codex app-server`'s messages, whose protocol
+codex marks experimental — rather than the shapes the fixtures model.
 
 ## Fixtures
 

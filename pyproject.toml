@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-proxy"
 version = "0.1.0"
-description = "Turn-aware JSON stream around an interactive claude TUI."
+description = "Turn-aware JSON stream around an interactive claude TUI or codex app-server."
 requires-python = ">=3.11"
 readme = "README.md"
 license = { text = "MIT" }
@@ -29,6 +29,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "live: requires a live `claude` binary on PATH; slow",
+    "live: requires a live `claude` or `codex` binary on PATH; slow",
     "slow: long-running tests (e.g. a soak); opt in with `-m slow`",
 ]
