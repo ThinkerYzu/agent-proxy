@@ -6,7 +6,8 @@ jobs:
 - **Forward the caller's arguments** minus the print-mode flags, so a client
   can pass `--resume`, `--model` or anything else straight through.
 - **Harden the spawn**, so the proxy never meets a screen it cannot answer:
-  no permission prompts, and no `AskUserQuestion` selector, which blocks a
+  no permission prompts, no optional autocompact suggestion, and no
+  `AskUserQuestion` selector, which blocks a
   turn on a keystroke no client can send and deadlocks the session.
 - **Know the transcript path up front** by resolving a session id for every
   invocation, so the tailer opens a deterministic file and the proxy can name
@@ -73,6 +74,13 @@ def build_argv(passthrough: Sequence[str]) -> list[str]:
     head = ["claude"]
     if not has_skip:
         head.append("--dangerously-skip-permissions")
+    # An explicit window suppresses Claude's optional autocompact suggestion,
+    # which otherwise leaves later prompts queued behind a modal. Only options
+    # before `--` count as caller overrides. Keep the default in the prefix so
+    # neither `--` nor a variadic tool list can swallow it as a value.
+    options = forwarded[: forwarded.index("--")] if "--" in forwarded else forwarded
+    if not any(arg == "--autocompact" or arg.startswith("--autocompact=") for arg in options):
+        head.extend(["--autocompact", "1m"])
     return head + list(forwarded)
 
 

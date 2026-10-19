@@ -84,6 +84,38 @@ def test_the_permission_flag_is_not_added_twice():
     assert argv.count("--dangerously-skip-permissions") == 1
 
 
+def test_an_explicit_autocompact_window_prevents_the_optional_suggestion():
+    argv = inner_claude.build_argv([])
+    assert argv.count("--autocompact") == 1
+    assert argv[argv.index("--autocompact") + 1] == "1m"
+
+
+@pytest.mark.parametrize("override", [
+    ["--autocompact", "400k"], ["--autocompact=400k"],
+    ["--autocompact", "auto"], ["--autocompact=auto"],
+])
+def test_a_callers_autocompact_choice_is_preserved_without_a_default(override):
+    argv = inner_claude.build_argv(override + ["--", "prompt"])
+    options = argv[:argv.index("--")]
+    assert [arg for arg in options if arg.startswith("--autocompact")] == [override[0]]
+    index = options.index(override[0])
+    assert options[index:index + len(override)] == override
+    assert "1m" not in options
+
+
+@pytest.mark.parametrize("positional", [
+    ["prompt"], ["--autocompact", "400k"], ["--autocompact=auto"],
+])
+def test_autocompact_default_precedes_double_dash_and_ignores_positional_flags(positional):
+    argv = inner_claude.build_argv(["--disallowedTools", "WebFetch", "--", *positional])
+    cut = argv.index("--")
+    assert argv[cut:] == ["--", *positional]
+    options = argv[:cut]
+    assert options.count("--autocompact") == 1
+    assert options[options.index("--autocompact") + 1] == "1m"
+    assert options.index("--autocompact") < options.index("--disallowedTools")
+
+
 # ----------------------------------------------------------------------
 # Session id and where the transcript is read from
 # ----------------------------------------------------------------------

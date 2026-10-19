@@ -57,7 +57,11 @@ mounts, and a second client that is not public — so claudejson is retired.
 
 ## Installing
 
-Not on PyPI: the package is useless without a `claude` binary it cannot declare
+The Claude backend requires **Claude Code ≥ 2.1.221** for its explicit
+`--autocompact 1m` launch default; caller overrides are described in
+[API.md](API.md#invocation).
+
+Not on PyPI: the package is useless without an agent binary it cannot declare
 as a dependency. Install from a release tag, which puts an `agent-proxy` on the
 path — the only thing a client needs from this repo:
 

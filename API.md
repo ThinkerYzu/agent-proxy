@@ -26,7 +26,7 @@ over JSON-RPC, with the same commands and messages; what differs is in
 [The codex agent](#the-codex-agent).
 
 Arguments the proxy does not recognise go to the inner `claude`, so
-`agent-proxy --resume 4f0d… --model opus` works. Four rules apply to that
+`agent-proxy --resume 4f0d… --model opus` works. Five rules apply to that
 passthrough:
 
 | Rule | Effect |
@@ -34,7 +34,17 @@ passthrough:
 | print-mode flags dropped | `-p`, `--print`, `--verbose`, `--input-format`, `--output-format` are removed — they would turn off the TUI the design depends on |
 | permissions skipped | `--dangerously-skip-permissions` is added unless the caller passed it |
 | one tool denied | `AskUserQuestion` is folded into `--disallowedTools`, ahead of any `--`; it waits on a human keystroke no client can send |
+| explicit autocompact window | `--autocompact 1m` is added unless the caller supplies `--autocompact value` or `--autocompact=value` before `--`; prevents the optional window-size dialog from blocking queued prompts |
 | session flags rewritten | the proxy resolves the session itself and passes a canonical `--session-id` / `--resume` pair, replacing whatever session flags the caller wrote |
+
+The Claude backend requires **Claude Code ≥ 2.1.221**, which introduced
+`--autocompact` ([CLI reference](https://code.claude.com/docs/en/cli-reference)).
+The default overrides saved window settings for this launch without writing
+them; pass a smaller window or `auto` explicitly to choose another policy.
+Claude caps the window at the model's context limit; its
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` environment override still takes precedence
+([window configuration](https://code.claude.com/docs/en/model-config#set-the-auto-compact-window)).
+This hardening applies only to Claude.
 
 ### Sessions
 
