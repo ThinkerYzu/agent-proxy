@@ -17,7 +17,8 @@ module docstrings for the reasoning — `turn_tracker.py` on what moves a turn,
 
 ## Status
 
-Phase 2. It runs:
+v0.2.0. See [release notes](RELEASE-NOTES.md) for
+changes since v0.1.0 and client compatibility. It runs:
 
 ```bash
 echo '{"type":"submit","text":"Reply with exactly: PONG"}' | agent-proxy
@@ -66,7 +67,7 @@ as a dependency. Install from a release tag, which puts an `agent-proxy` on the
 path — the only thing a client needs from this repo:
 
 ```bash
-pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.1.0'
+pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
 ```
 
 [RELEASING.md](RELEASING.md) covers cutting one.
@@ -133,7 +134,7 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-387 tests, none of which needs a `claude` or `codex` binary (one of them
+396 tests, none of which needs a `claude` or `codex` binary (one of them
 proves the subreaper mechanism on the real kernel, in a subprocess; the codex
 ones run against `tests/fake_app_server.py`). Ten more do — seven against
 `claude`, three against `codex` — and are opt-in twice over: a marker alone

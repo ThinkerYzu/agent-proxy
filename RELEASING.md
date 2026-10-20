@@ -35,21 +35,27 @@ the fake does. Only a live run answers that — see
    - `pyproject.toml` → `[project] version`
    - `src/agentproxy/__init__.py` → `__version__`
 
-3. **Commit** the bump:
+3. **Update `RELEASE-NOTES.md`** with the changes since the previous tag,
+   client compatibility, and required agent versions. The release job uses
+   this file as the GitHub Release description. Update the README status and
+   installation example when publishing the release.
+
+4. **Commit** the bump and release notes:
 
    ```bash
-   git commit -am "Release v0.1.0"
+   git add pyproject.toml src/agentproxy/__init__.py RELEASE-NOTES.md README.md RELEASING.md .github/workflows/release.yml
+   git commit -m "Prepare v0.2.0 release"
    ```
 
-4. **Tag and push** — the tag is `v` + the version:
+5. **Tag and push** — the tag is `v` + the version:
 
    ```bash
-   git tag v0.1.0
+   git tag v0.2.0
    git push origin master
-   git push origin v0.1.0
+   git push origin v0.2.0
    ```
 
-5. The Release workflow publishes to
+6. The Release workflow publishes to
    `https://github.com/ThinkerYzu/agent-proxy/releases`. If nothing appears,
    the Actions tab has the reason.
 
@@ -79,7 +85,7 @@ description.
 Not on PyPI. Clients install from the tag:
 
 ```bash
-pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.1.0'
+pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
 ```
 
 which puts an `agent-proxy` binary on the path — the only thing

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-proxy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Turn-aware JSON stream around an interactive claude TUI or codex app-server."
 requires-python = ">=3.11"
 readme = "README.md"
