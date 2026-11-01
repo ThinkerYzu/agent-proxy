@@ -81,6 +81,7 @@ class Proxy:
         clock: Callable[[], float] = time.monotonic,
         inputs: Optional[InputRequests] = None,
         bridge=None,
+        bypass_permissions: bool = True,
     ) -> None:
         self._tracker = tracker
         self._emitter = emitter
@@ -105,6 +106,8 @@ class Proxy:
         self._stdin_closed = False
         self._inputs = inputs
         self._bridge = bridge
+        self._bypass_permissions = bypass_permissions
+        self._permission_seq = 0
         self._session_id = None
         self._hook_connections = {}
         self._emitter.input_requests = inputs
@@ -131,6 +134,9 @@ class Proxy:
         ready = {"type": "ready", "session_id": session_id, "agent": AGENT_CLAUDE}
         if self._inputs is not None:
             ready["capabilities"] = {"user_input": True}
+        if not self._bypass_permissions:
+            ready["permissions"] = {"bypass": False}
+            ready["capabilities"]["permission_approvals"] = True
         self._emit([ready])
 
     def fail(self, reason: str) -> None:
@@ -209,6 +215,10 @@ class Proxy:
         self._emit(self._inputs.send(request, native, "dismissed" if command.dismiss else "answered"))
 
     def _on_hook(self, connection, payload) -> None:
+        event = payload.get("hook_event_name")
+        if not self._bypass_permissions and event in ("PermissionRequest", "Notification"):
+            self._on_permission_hook(connection, payload)
+            return
         tool_id = payload.get("tool_use_id")
         if (payload.get("session_id") != self._session_id
             or payload.get("tool_name") != "AskUserQuestion"
@@ -249,6 +259,48 @@ class Proxy:
             return
         self._hook_connections[connection] = key
         self._emit([request_event])
+        if self._stdin_closed or turn.cancel_requested:
+            self._emit(self._inputs.close("cancelled" if turn.cancel_requested else "dismissed", turn.id))
+
+    def _on_permission_hook(self, connection, payload) -> None:
+        event = payload.get("hook_event_name")
+        if payload.get("session_id") != self._session_id:
+            connection.respond(denial("permission hook is not from the main session", event))
+            self._reject("permission hook is not from the main session")
+            return
+        if event == "Notification":
+            connection.respond({})
+            if self._hook_connections:
+                # Claude also notifies while a supported decision hook waits.
+                return
+            # Network sandbox prompts have no native decision hook. Never guess
+            # terminal keys or allow the turn fallback to report success.
+            raise RuntimeError("Claude permission prompt has no supported decision hook")
+        if not isinstance(payload.get("tool_name"), str) or not isinstance(payload.get("tool_input"), dict):
+            connection.respond(denial("invalid permission operation", event))
+            self._reject("invalid permission operation")
+            return
+        self._emit(self._tracker.confirm_hook_turn())
+        turn = self._tracker.running_turn
+        self._permission_seq += 1
+        key = ("claude-permission", self._permission_seq)
+
+        def delivered():
+            self._hook_connections.pop(connection, None)
+            self._emit(self._inputs.resolve(key))
+
+        def deliver(native, reason):
+            allow = native is not None and native.get("permission") == ["Allow once"]
+            connection.on_delivered = delivered
+            connection.respond({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                "decision": {"behavior": "allow"} if allow else {
+                    "behavior": "deny", "message": f"agent-proxy permission {reason if native is None else 'denied'}"}}})
+
+        self._hook_connections[connection] = key
+        self._emit([self._inputs.add_permission(key, turn.ref(), {
+            "agent": "claude", "tool": payload["tool_name"], "input": payload["tool_input"],
+            "cwd": payload.get("cwd"),
+        }, deliver)])
         if self._stdin_closed or turn.cancel_requested:
             self._emit(self._inputs.close("cancelled" if turn.cancel_requested else "dismissed", turn.id))
 

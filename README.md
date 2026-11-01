@@ -65,6 +65,13 @@ Claude input support requires Claude Code >= 2.1.316. See
 [API.md: User input](API.md#user-input) for the full contract and Codex setup.
 Existing invocations keep questions disabled.
 
+Use `agent-proxy --no-bypass-permissions` (also with `--agent codex`) to use
+native permission checks and ask through the client's choice-prompt flow.
+The flag implies `--user-input`. Permission prompts show the operation and
+Allow once / Deny choices, with the same configurable 24-hour deadline.
+Dismissal and expiry deny. See [permission approvals](API.md#permission-approvals)
+for backend policies and supported approval types. This is also unreleased.
+
 ## Installing
 
 The Claude backend requires **Claude Code ≥ 2.1.221** for its explicit

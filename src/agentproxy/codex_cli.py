@@ -86,7 +86,7 @@ def serve_codex(
     stdin: IO[bytes],
     stdout: IO[str],
     passthrough: Sequence[str] = (),
-    *, user_input: bool = False,
+    *, user_input: bool = False, bypass_permissions: bool = True,
 ) -> int:
     """Run one codex-backed session, from spawn to the last message on stdout.
 
@@ -94,9 +94,10 @@ def serve_codex(
     (bad arguments, no codex, the wrong account, an unknown thread), which
     is reported as a lone `error` with no `ready` before it.
     """
+    user_input = user_input or not bypass_permissions
     cwd = os.getcwd()
     try:
-        plan = inner_codex.plan(passthrough, cwd, binary=CODEX_BIN)
+        plan = inner_codex.plan(passthrough, cwd, binary=CODEX_BIN, bypass_permissions=bypass_permissions)
         inputs = InputRequests(input_timeout()) if user_input else None
         if user_input and not any(
             arg.split("=", 1)[0].strip() in ("features.default_mode_request_user_input", "features")
@@ -156,6 +157,7 @@ def serve_codex(
         reaper=reaper,
         kill_orphans=os.environ.get("AGENTPROXY_KILL_ORPHANS", "").lower() in ("1", "true", "yes"),
         inputs=inputs,
+        bypass_permissions=bypass_permissions,
     )
     proxy.announce_ready(thread_id)
     # Whatever the server said while startup waited on its own answers.

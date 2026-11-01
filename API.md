@@ -12,14 +12,14 @@ what moves a turn and `fallback.py` for what ends one no marker ended.
 ## Invocation
 
 ```bash
-agent-proxy [--agent claude|codex] [--user-input] [agent arguments...]
+agent-proxy [--agent claude|codex] [--user-input] [--no-bypass-permissions] [agent arguments...]
 ```
 
 The proxy spawns one inner agent, reads line-delimited JSON commands on
 stdin, and writes line-delimited JSON messages on stdout. One client per
 process; the client owns the process's lifetime.
 
-`--agent` and `--user-input` are arguments the proxy keeps for itself. `claude`, the
+`--agent`, `--user-input` and `--no-bypass-permissions` are proxy arguments. `claude`, the
 default, is an interactive `claude` on a pty, and everything below this
 section describes it unless it says otherwise. `codex` is `codex app-server`
 over JSON-RPC, with the same commands and messages; what differs is in
@@ -32,8 +32,8 @@ passthrough:
 | Rule | Effect |
 |---|---|
 | print-mode flags dropped | `-p`, `--print`, `--verbose`, `--input-format`, `--output-format` are removed — they would turn off the TUI the design depends on |
-| permissions skipped | `--dangerously-skip-permissions` is added unless the caller passed it |
-| questions disabled by default | `AskUserQuestion` is added to `--disallowedTools` unless `--user-input` enables the question bridge; explicit caller denials are always preserved |
+| permissions skipped by default | `--dangerously-skip-permissions` is added unless the caller passed it; `--no-bypass-permissions` enables native checks and client approvals instead |
+| questions disabled by default | `AskUserQuestion` is added to `--disallowedTools` unless `--user-input` or `--no-bypass-permissions` enables the question bridge; explicit caller denials are always preserved |
 | explicit autocompact window | `--autocompact 1m` is added unless the caller supplies `--autocompact value` or `--autocompact=value` before `--`; prevents the optional window-size dialog from blocking queued prompts |
 | session flags rewritten | the proxy resolves the session itself and passes a canonical `--session-id` / `--resume` pair, replacing whatever session flags the caller wrote |
 
@@ -79,7 +79,7 @@ Two things worth knowing:
 
 | Variable | Default | What it does |
 |---|---|---|
-| `AGENTPROXY_INPUT_TIMEOUT_S` | `86400` | unanswered-question deadline in seconds with `--user-input`; positive and finite, at most `31536000` (one year); independent of turn fallbacks |
+| `AGENTPROXY_INPUT_TIMEOUT_S` | `86400` | unanswered question/permission deadline in seconds with either input flag; positive and finite, at most `31536000` (one year); independent of turn fallbacks |
 | `AGENTPROXY_LOG` | unset | path to a debug log of pty bytes, stdin lines and state transitions |
 | `AGENTPROXY_FALLBACK_IDLE_S` | `8` | footer idle + transcript quiet for this long ends a turn |
 | `AGENTPROXY_FALLBACK_QUIET_S` | `60` | pty silent + transcript quiet for this long ends a turn |
@@ -164,7 +164,7 @@ aggregate — use whichever suits.
 ## Commands
 
 Write one JSON object per line to stdin and flush. The first three commands are
-always available; `answer` requires `--user-input`:
+always available; `answer` requires `--user-input` or `--no-bypass-permissions`:
 
 ```json
 {"type": "submit", "text": "what does load_timeout_id do?", "ref": "c-17"}
@@ -267,7 +267,7 @@ What a client may rely on:
 
 | `type` | When | Fields beyond the envelope |
 |---|---|---|
-| `ready` | first message of the session, always `seq` 1 | `session_id` — always a real id, see [Sessions](#sessions); `agent`, the inner agent that id belongs to; `capabilities.user_input: true` with `--user-input` |
+| `ready` | first message of the session, always `seq` 1 | `session_id` — always a real id, see [Sessions](#sessions); `agent`, the inner agent that id belongs to; `capabilities.user_input: true` when input is enabled; restricted launches also announce `permissions.bypass: false` and `capabilities.permission_approvals: true` |
 | `ack` | a `submit`, `cancel` or `answer` was accepted | `ref` if the command carried one (`turn` carries the new id, or the id being cancelled) |
 | `turn_start` | a turn began running | `caused_by` when a background task woke it |
 | `text` | assistant prose | `text` |
@@ -333,6 +333,71 @@ map across a reconnect**. A turn id in the reply can be recognised as one you
 were already waiting on; it cannot be re-attached afterwards to a prompt whose
 `ack` you never read.
 
+## Permission approvals
+
+Unreleased checkout addition:
+
+```bash
+agent-proxy --no-bypass-permissions
+agent-proxy --agent codex --no-bypass-permissions
+```
+
+This flag implies `--user-input`. Use a client that displays the operation details
+and supports the existing choice-prompt flow. Default launches retain bypass.
+Pass the flag again on resume/fork; no saved configuration is changed.
+
+Claude uses ordinary `manual` permission mode unless an explicit non-bypass
+mode is supplied. Existing allow/ask/deny rules still apply. Explicit skip flags,
+`--allow-dangerously-skip-permissions` and `bypassPermissions` mode before `--`
+conflict and produce a startup `error`. Saved bypass mode is overridden for this
+launch. Claude Code >= 2.1.316 and working hooks are required.
+
+Codex uses `workspace-write`, `approvalPolicy: "on-request"` and
+`approvalsReviewer: "user"` on start/resume/fork/latest. Explicit `read-only`
+is preserved; explicit full access or skip-permissions flags are rejected.
+Disabling blanket bypass does not make every already-permitted operation ask.
+
+`ready` adds `permissions: {"bypass": false}` and
+`capabilities: {"user_input": true, "permission_approvals": true}`.
+Permission requests use ordinary `input_request` envelopes and add:
+
+```json
+{"kind":"permission","permission":{"agent":"claude","tool":"Bash","input":{"command":"printf hello"},"cwd":"/work","scope":"operation"}}
+```
+
+The request also contains the usual id, expiry and one question. Its choices
+are **Allow once** and **Deny**, with `multi_select: false` and
+`allow_text: false`. Render the supplied labels and option IDs; do not assume
+that Allow is always offered or select an option automatically. A Codex request
+includes `permission.method`, `permission.operation` (the native approval
+parameters) and `permission.item` (the corresponding started item, when available).
+Display commands, paths, changes and requested access from these details.
+The operation also appears in question text for existing choice renderers.
+
+Send `answer` with the chosen option ID exactly as for questions. Dismissal,
+expiry (24 hours by default), cancellation and EOF deny the pending request.
+`AGENTPROXY_INPUT_TIMEOUT_S` configures the deadline. Status recovery,
+`outstanding.input`, atomic validation and stale-answer rejection are shared
+with questions. Each subsequent operation needs its own decision. The proxy
+never adds a saved rule, a session grant or a policy amendment.
+
+An `ack` means accepted for delivery. Claude confirms after its hook helper
+flushes the native decision; Codex confirms with `serverRequest/resolved`.
+`input_resolved` with `reason: "answered"` includes both Allow and Deny choices
+and confirms delivery, not successful execution. Codex sometimes offers only
+`cancel` as its native denial; choosing Deny then interrupts the native turn.
+The normal turn-ending event reports the resulting outcome.
+
+Supported requests are Claude tool PermissionRequest hooks and Codex command
+and file-change operation approvals. Broader Codex permission grants, file
+requests with a session `grantRoot`, legacy approvals and unsupported decision
+variants are refused with an explicit protocol error. Claude sandbox-network
+prompts do not offer a PermissionRequest decision hook. An unmatched native
+permission notification fails the session explicitly. Delayed notifications
+while a supported hook is waiting do not create duplicate prompts. Disabled
+hooks fail startup; broken approval transport fails the session. No fallback
+selects a native permission option.
+
 ## User input
 
 Unreleased addition, available from the working checkout. Launch with
@@ -352,11 +417,12 @@ a monotonic clock. Deadline expiry dismisses the question without choosing an
 option and emits `input_resolved` with `reason: "expired"`.
 
 `ready.capabilities.user_input: true` announces the enabled extension.
-Without the flag, that capability and the input count/state fields are absent,
+Without either input flag, that capability and the input count/state fields are absent,
 Claude questions remain disabled, and Codex input requests receive empty
 answers as before. A client must be able to render and answer questions before
-opting in. Permission requests, plan approval and general MCP forms retain
-their existing policies.
+opting in. `--user-input` alone retains existing permission policies. See
+[Permission approvals](#permission-approvals) for restricted launches. General
+MCP forms retain their existing policies.
 
 A real backend question emits `input_request`. The usual `seq`, `turn` and
 `outstanding` envelope is present; payload fields are shown here:
@@ -522,9 +588,9 @@ run a different agent from the one the host configured.
 |---|---|
 | `--model <m>`, `-m <m>` | the thread's model |
 | `-c key=value` | passed to `codex app-server` as a config override (not claude's short `--continue`) |
-| `--sandbox <mode>`, `-s <mode>` | the thread's sandbox: `read-only`, `workspace-write` or `danger-full-access`; `danger-full-access` without it, as claude runs with permissions skipped |
+| `--sandbox <mode>`, `-s <mode>` | the thread's sandbox: `read-only`, `workspace-write` or `danger-full-access`; `danger-full-access` by default, or `workspace-write` with `--no-bypass-permissions` |
 | `--append-system-prompt <text>` | the thread's `developerInstructions` |
-| `--dangerously-skip-permissions` | accepted; the thread already never asks for approval and has full access |
+| `--dangerously-skip-permissions` | accepted by default; conflicts with `--no-bypass-permissions` |
 | `--resume`, `--continue`, `--fork-session` | see [Sessions](#codex-sessions) |
 | `--session-id` | refused: codex mints its own ids |
 | `--allowedTools`, `--disallowedTools`, `--mcp-config` | refused: codex has no per-session equivalent |
@@ -566,8 +632,10 @@ agent next to each id.
   `tool_result.content` is the command's output, or the completed item.
 - **`thinking`** appears only when codex reports a reasoning summary, which
   it often does not.
-- **No approval is ever pending.** The thread is opened with
-  `approvalPolicy: "never"`, and any request codex sends anyway is declined.
+- **Approval policy depends on the launch.** Default launches use
+  `approvalPolicy: "never"` and decline unexpected requests. With
+  `--no-bypass-permissions`, supported operation approvals wait for client
+  choices; see [Permission approvals](#permission-approvals).
 - **Like claude, codex orphans a shell of its own** on the first command of
   a session (it sets up the shell environment), so expect a brief
   `orphan_start`/`orphan_end` pair there.

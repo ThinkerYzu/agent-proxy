@@ -162,6 +162,7 @@ class FakeAppServer:
         turn_id = self._waiting_approval.pop(message.get("id"), None)
         if turn_id is None or turn_id != self._active:
             return
+        self._say("serverRequest/resolved", threadId=self.thread_id, requestId=message["id"])
         decision = (message.get("result") or {}).get("decision", "none")
         self._agent_message(turn_id, f"approval:{decision}")
         self._later(1, self._next_step)

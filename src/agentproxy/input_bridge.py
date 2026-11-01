@@ -22,6 +22,8 @@ class HookConnection:
         self.payload = None
         self.received_at = time.monotonic()
         self.closed = False
+        self.on_delivered = None
+        self.awaiting_receipt = False
 
     def respond(self, output: dict) -> None:
         if not self.closed and not self.output:
@@ -57,7 +59,10 @@ class InputBridge:
                     written = c.sock.send(c.output)
                     del c.output[:written]
                     if not c.output:
-                        c.close()
+                        if c.on_delivered is None:
+                            c.close()
+                        else:
+                            c.awaiting_receipt = True
                 else:
                     data = c.sock.recv(65536)
                     if not data:
@@ -72,7 +77,17 @@ class InputBridge:
                             c.payload = json.loads(bytes(c.buffer).split(b"\n", 1)[0])
                             if not isinstance(c.payload, dict):
                                 raise ValueError("hook payload must be an object")
+                            c.buffer.clear()
                             on_request(c, c.payload)
+                    elif c.awaiting_receipt:
+                        c.buffer.extend(data)
+                        if len(c.buffer) > MAX_MESSAGE_BYTES:
+                            raise ValueError("oversized hook receipt")
+                        if b"\n" in c.buffer:
+                            if json.loads(bytes(c.buffer).split(b"\n", 1)[0]) != {"delivered": True}:
+                                raise ValueError("invalid hook receipt")
+                            c.on_delivered()
+                            c.close()
                 if c.payload is None and time.monotonic() - c.received_at > 10:
                     c.close()
             except BlockingIOError:
@@ -90,7 +105,7 @@ class InputBridge:
         self.listener.close()
         self._dir.cleanup()
 
-    def argv(self, args: list[str], timeout_s: float) -> list[str]:
+    def argv(self, args: list[str], timeout_s: float, *, permission_approvals: bool = False) -> list[str]:
         """Merge a launch-local hook without replacing caller settings or hooks."""
         prefix, suffix = (args[:args.index("--")], args[args.index("--"):]) if "--" in args else (list(args), [])
         if "--bare" in prefix:
@@ -155,11 +170,14 @@ class InputBridge:
         if not isinstance(hooks, dict):
             raise ValueError("settings hooks must be an object")
         command = shlex.join([sys.executable, "-m", "agentproxy.input_hook", self.path])
-        for event in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
+        events = [(e, "AskUserQuestion") for e in ("PreToolUse", "PostToolUse", "PostToolUseFailure")]
+        if permission_approvals:
+            events.extend([("PermissionRequest", ".*"), ("Notification", "permission_prompt")])
+        for event, matcher in events:
             entries = hooks.setdefault(event, [])
             if not isinstance(entries, list):
                 raise ValueError("settings hook entries must be arrays")
-            entries.append({"matcher": "AskUserQuestion", "hooks": [{
+            entries.append({"matcher": matcher, "hooks": [{
                 "type": "command", "command": command,
                 "timeout": math.ceil(timeout_s + 120), "onFailure": "block",
             }]})

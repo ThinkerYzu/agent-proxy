@@ -73,6 +73,7 @@ class CodexProxy:
         stall_after_s: float = STALL_AFTER_S,
         unmatched_after_s: float = UNMATCHED_AFTER_S,
         inputs: Optional[InputRequests] = None,
+        bypass_permissions: bool = True,
     ) -> None:
         self._tracker = tracker
         self._emitter = emitter
@@ -92,7 +93,9 @@ class CodexProxy:
         self._typed_at: Optional[float] = None
         self._last_heard = clock()
         self._inputs = inputs
+        self._bypass_permissions = bypass_permissions
         self._emitter.input_requests = inputs
+        self._permission_items = {}
         self._early_inputs: list[tuple[ServerRequest, float]] = []
 
     # ------------------------------------------------------------------
@@ -104,6 +107,9 @@ class CodexProxy:
         ready = {"type": "ready", "session_id": thread_id, "agent": AGENT_CODEX}
         if self._inputs is not None:
             ready["capabilities"] = {"user_input": True}
+        if not self._bypass_permissions:
+            ready["permissions"] = {"bypass": False}
+            ready["capabilities"]["permission_approvals"] = True
         self._emit([ready])
 
     def fail(self, reason: str) -> None:
@@ -258,11 +264,21 @@ class CodexProxy:
             if isinstance(message, Response):
                 self._on_response(message)
             elif isinstance(message, ServerRequest):
-                if self._inputs is not None and message.method == "item/tool/requestUserInput":
+                if self._inputs is not None and (message.method == "item/tool/requestUserInput"
+                    or (not self._bypass_permissions and message.method in (
+                        "item/commandExecution/requestApproval", "item/fileChange/requestApproval"))):
                     self._on_input(message)
                 else:
                     self._refuse(message)
             elif isinstance(message, Notification):
+                if (not self._bypass_permissions and message.method == "item/started"
+                    and message.params.get("threadId") == self._session.thread_id):
+                    item = message.params.get("item") or {}
+                    if isinstance(item.get("id"), str) and item.get("type") in ("fileChange", "commandExecution"):
+                        self._permission_items[(message.params.get("turnId"), item["id"])] = dict(item)
+                if message.method == "turn/completed":
+                    native_id = (message.params.get("turn") or {}).get("id")
+                    self._permission_items = {k: v for k, v in self._permission_items.items() if k[0] != native_id}
                 if (self._inputs is not None and message.method == "serverRequest/resolved"
                     and message.params.get("threadId") == self._session.thread_id):
                     key = ("codex", message.params.get("requestId"))
@@ -295,6 +311,9 @@ class CodexProxy:
             else:
                 self._peer.respond_error(request.id, -32602, "input request names an unknown turn")
             return
+        if request.method != "item/tool/requestUserInput":
+            self._on_permission(request, turn)
+            return
         def deliver(native, reason):
             self._peer.respond(request.id, {"answers": {} if native is None else {
                 q: {"answers": a} for q, a in native.items()}})
@@ -312,6 +331,33 @@ class CodexProxy:
         if self._stdin_closed or (owner is not None and owner.cancel_requested):
             self._emit(self._inputs.close("cancelled" if owner.cancel_requested else "dismissed", turn["id"]))
 
+    def _on_permission(self, request: ServerRequest, turn: dict) -> None:
+        params = request.params
+        owner = self._tracker.turn(turn["id"])
+        if owner is None or owner.state == "ended" or params.get("grantRoot") is not None:
+            self._refuse(request)
+            self._reject("permission request has no active operation or asks for a broader grant")
+            return
+        decisions = params.get("availableDecisions")
+        if decisions is not None and (not isinstance(decisions, list)
+                                      or not any(d in decisions for d in ("decline", "cancel"))):
+            self._refuse(request)
+            self._reject("permission request has no supported denial decision")
+            return
+        deny = "decline" if decisions is None or "decline" in decisions else "cancel"
+        def deliver(native, reason):
+            allow = native is not None and native.get("permission") == ["Allow once"]
+            self._peer.respond(request.id, {"decision": "accept" if allow else deny})
+        event = self._inputs.add_permission(("codex", request.id), turn, {
+            "agent": "codex", "method": request.method, "operation": dict(params),
+            "item": self._permission_items.get((params["turnId"], params["itemId"])),
+        }, deliver, allow=decisions is None or "accept" in decisions)
+        if event is not None:
+            self._emit([event])
+        owner = self._tracker.turn(turn["id"])
+        if self._stdin_closed or (owner is not None and owner.cancel_requested):
+            self._emit(self._inputs.close("cancelled" if owner and owner.cancel_requested else "dismissed", turn["id"]))
+
     def _on_response(self, response: Response) -> None:
         if response.method == "turn/start" and response.id == self._turn_start_id:
             self._turn_start_id = None
@@ -324,6 +370,8 @@ class CodexProxy:
 
     def _refuse(self, request: ServerRequest) -> None:
         """Answer a request no client can serve, with the refusal codex expects."""
+        if not self._bypass_permissions and request.method in ("item/permissions/requestApproval", "execCommandApproval", "applyPatchApproval"):
+            self._reject(f"unsupported permission request refused: {request.method}")
         refusal = _REFUSALS.get(request.method)
         log.log_text("codex-proxy", f"refusing server request {request.method}")
         if refusal is None:

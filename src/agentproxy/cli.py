@@ -88,6 +88,10 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--no-bypass-permissions", action="store_true",
+        help="use native permission checks and relay approvals as client choices (implies --user-input)",
+    )
+    parser.add_argument(
         "--user-input", action="store_true",
         help="relay agent questions to the client (AGENTPROXY_INPUT_TIMEOUT_S defaults to 86400)",
     )
@@ -139,7 +143,7 @@ def serve(
     stdin: IO[bytes],
     stdout: IO[str],
     passthrough: Sequence[str] = (),
-    *, user_input: bool = False,
+    *, user_input: bool = False, bypass_permissions: bool = True,
 ) -> int:
     """Run one proxied session, from spawn to the last message on stdout.
 
@@ -151,10 +155,12 @@ def serve(
     # Stamped before the spawn so a forked session's backfill — which carries
     # the original's timestamps — is entirely in the past by this clock.
     started_at = datetime.now(timezone.utc)
+    user_input = user_input or not bypass_permissions
     bridge = None
     inputs = None
     try:
         session_id, tail_mode, argv = inner_claude.resolve_session(passthrough)
+        launch_argv = inner_claude.build_argv(argv, user_input=user_input, bypass_permissions=bypass_permissions)
         if user_input:
             inputs = InputRequests(input_timeout())
             version = subprocess.check_output(["claude", "--version"], text=True, timeout=10)
@@ -162,7 +168,7 @@ def serve(
             if not match or tuple(map(int, match.groups())) < (2, 1, 316):
                 raise ValueError("--user-input requires Claude Code >= 2.1.316")
             bridge = InputBridge()
-            argv = bridge.argv(argv, inputs.timeout_s)
+            launch_argv = bridge.argv(launch_argv, inputs.timeout_s, permission_approvals=not bypass_permissions)
     except (ValueError, OSError, subprocess.SubprocessError) as bad_flags:
         if bridge is not None:
             bridge.close()
@@ -182,7 +188,7 @@ def serve(
 
     try:
         driver = PtyDriver(
-            inner_claude.build_argv(argv, user_input=user_input), env=inner_claude.build_env(dict(os.environ))
+            launch_argv, env=inner_claude.build_env(dict(os.environ))
         )
     except Exception:
         if bridge is not None:
@@ -241,6 +247,7 @@ def serve(
         send_keys=_send_keys,
         inputs=inputs,
         bridge=bridge,
+        bypass_permissions=bypass_permissions,
     )
 
     # `on_query` answers the inner's terminal-capability probes (DA1,
@@ -303,8 +310,8 @@ def serve(
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args, passthrough = _build_parser().parse_known_args(argv)
     if args.agent == AGENT_CODEX:
-        return serve_codex(sys.stdin.buffer, sys.stdout, passthrough=passthrough, user_input=args.user_input)
-    return serve(sys.stdin.buffer, sys.stdout, passthrough=passthrough, user_input=args.user_input)
+        return serve_codex(sys.stdin.buffer, sys.stdout, passthrough=passthrough, user_input=args.user_input, bypass_permissions=not args.no_bypass_permissions)
+    return serve(sys.stdin.buffer, sys.stdout, passthrough=passthrough, user_input=args.user_input, bypass_permissions=not args.no_bypass_permissions)
 
 
 if __name__ == "__main__":

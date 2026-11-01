@@ -245,7 +245,7 @@ class ProcessTree:
 class Session:
     """One proxied session: a scripted inner `claude` and a stand-in io loop."""
 
-    def __init__(self, tree: ProcessTree | None = None, kill_orphans: bool = False, *, user_input=False, input_timeout_s=86400) -> None:
+    def __init__(self, tree: ProcessTree | None = None, kill_orphans: bool = False, *, user_input=False, input_timeout_s=86400, bypass_permissions=True) -> None:
         from agentproxy.user_input import InputRequests
         self.clock = Clock()
         self.out = io.StringIO()
@@ -292,7 +292,8 @@ class Session:
             kill_orphans=kill_orphans,
             send_keys=self._send_keys,
             clock=self.clock,
-            inputs=InputRequests(input_timeout_s, clock=self.clock) if user_input else None,
+            inputs=InputRequests(input_timeout_s, clock=self.clock) if user_input or not bypass_permissions else None,
+            bypass_permissions=bypass_permissions,
         )
         self.proxy.announce_ready("session-under-test")
         # Two frames, because the inner is not considered ready for input until

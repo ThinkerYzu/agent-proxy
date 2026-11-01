@@ -79,7 +79,7 @@ def build_env(base: dict[str, str]) -> dict[str, str]:
     return {k: v for k, v in base.items() if k not in API_KEY_VARS}
 
 
-def plan(argv: Sequence[str], cwd: str, binary: str = "codex") -> CodexPlan:
+def plan(argv: Sequence[str], cwd: str, binary: str = "codex", *, bypass_permissions: bool = True) -> CodexPlan:
     """Turn the caller's arguments into a `CodexPlan`, or raise `CodexArgumentError`.
 
     Accepted: `--model`/`-m`, `-c key=value` (to the app-server),
@@ -92,6 +92,8 @@ def plan(argv: Sequence[str], cwd: str, binary: str = "codex") -> CodexPlan:
     """
     server_argv = [binary, "app-server"]
     options: dict = {"cwd": cwd, "approvalPolicy": APPROVAL_POLICY, "sandbox": DEFAULT_SANDBOX}
+    if not bypass_permissions:
+        options.update(approvalPolicy="on-request", approvalsReviewer="user", sandbox="workspace-write")
     resume: Optional[str] = None
     resume_latest = False
     fork = False
@@ -119,11 +121,14 @@ def plan(argv: Sequence[str], cwd: str, binary: str = "codex") -> CodexPlan:
                 raise CodexArgumentError(
                     f"{flag} must be one of {', '.join(_SANDBOX_MODES)}, not {mode!r}"
                 )
+            if not bypass_permissions and mode == "danger-full-access":
+                raise CodexArgumentError("--no-bypass-permissions conflicts with danger-full-access")
             options["sandbox"] = mode
         elif flag == "--append-system-prompt":
             options["developerInstructions"] = inline if eq else value(flag)
         elif flag == "--dangerously-skip-permissions":
-            pass
+            if not bypass_permissions:
+                raise CodexArgumentError("--no-bypass-permissions conflicts with explicit permission bypass")
         elif flag in ("--resume", "-r"):
             if eq:
                 resume = inline

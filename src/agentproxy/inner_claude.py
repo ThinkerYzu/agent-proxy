@@ -63,7 +63,7 @@ def build_env(base: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def build_argv(passthrough: Sequence[str], *, user_input: bool = False) -> list[str]:
+def build_argv(passthrough: Sequence[str], *, user_input: bool = False, bypass_permissions: bool = True) -> list[str]:
     """Compose the inner `claude` command line from the caller's arguments."""
     forwarded = filter_passthrough(passthrough)
     if not user_input:
@@ -73,8 +73,23 @@ def build_argv(passthrough: Sequence[str], *, user_input: bool = False) -> list[
         or arg.startswith("--dangerously-skip-permissions=")
         for arg in forwarded
     )
+    options = forwarded[: forwarded.index("--")] if "--" in forwarded else forwarded
+    modes = []
+    for i, arg in enumerate(options):
+        if arg == "--permission-mode":
+            if i + 1 >= len(options):
+                raise ValueError("--permission-mode needs a value")
+            modes.append(options[i + 1])
+        elif arg.startswith("--permission-mode="):
+            modes.append(arg.split("=", 1)[1])
+    if not bypass_permissions and (any(a.split("=", 1)[0] in
+            ("--dangerously-skip-permissions", "--allow-dangerously-skip-permissions") for a in options)
+            or "bypassPermissions" in modes):
+        raise ValueError("--no-bypass-permissions conflicts with explicit permission bypass")
     head = ["claude"]
-    if not has_skip:
+    if not bypass_permissions and not modes:
+        head.extend(["--permission-mode", "manual"])
+    if bypass_permissions and not has_skip:
         head.append("--dangerously-skip-permissions")
     # An explicit window suppresses Claude's optional autocompact suggestion,
     # which otherwise leaves later prompts queued behind a modal. Only options

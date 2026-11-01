@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from collections import deque
 import math
 import os
@@ -122,6 +123,33 @@ class InputRequests:
         request.metadata = metadata or {}
         self._seen.append(key)
         return {"type": "input_request", "turn": request.turn, "request": request.wire()}
+
+    def add_permission(self, key, turn, details, deliver, *, allow=True):
+        """A permission answer can select only an offered operation decision."""
+        options = ([{"label": "Allow once", "description": "Approve only this operation"}] if allow else [])
+        options.append({"label": "Deny", "description": "Do not approve this operation"})
+        # Put the operation in question text as well as structured metadata so
+        # existing choice renderers can show exactly what is being approved.
+        operation = details.get("operation", details.get("input", {}))
+        tool = details.get("tool") or ("file changes" if "fileChange" in details.get("method", "") else "command")
+        description = f"Allow {tool} once?"
+        if isinstance(operation, dict):
+            if isinstance(operation.get("command"), str):
+                description += "\n\n" + operation["command"]
+            else:
+                description += "\n\n" + json.dumps(operation, indent=2, ensure_ascii=False)
+            cwd = operation.get("cwd", details.get("cwd"))
+            if cwd:
+                description += f"\nDirectory: {cwd}"
+            for field in ("reason", "additionalPermissions", "networkApprovalContext"):
+                if operation.get(field) is not None:
+                    description += f"\n{field}: " + json.dumps(operation[field], ensure_ascii=False)
+        item = details.get("item") or {}
+        if item.get("changes") is not None:
+            description += "\nChanges: " + json.dumps(item["changes"], indent=2, ensure_ascii=False)
+        return self.add(key, turn, [{"id": "permission", "header": "Permission",
+            "question": description, "options": options}], "codex", True, deliver,
+            {"kind": "permission", "permission": {**details, "scope": "operation"}})
 
     def accept(self, request_id: str, answers: object, dismiss: bool) -> tuple[InputRequest, dict | None]:
         r = self.requests.get(request_id)
