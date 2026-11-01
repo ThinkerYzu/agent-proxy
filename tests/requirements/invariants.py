@@ -22,7 +22,7 @@ TURN_KINDS = {"user", "unowned"}
 COUNTS = {"user", "unowned", "background", "monitor", "agent"}
 # Present on every message or on none: a proxy that could not become a
 # subreaper never looked, and says nothing rather than `0`.
-OPTIONAL_COUNTS = {"orphan"}
+OPTIONAL_COUNTS = {"orphan", "input"}
 
 
 def envelope(messages: list[dict]) -> None:
@@ -133,6 +133,7 @@ def every_turn_ends(messages: list[dict]) -> None:
     opened, ended = set(), set()
     tasks_opened, tasks_ended = set(), set()
     orphans_opened, orphans_ended = set(), set()
+    inputs_opened, inputs_ended = set(), Counter()
     for message in messages:
         kind = message["type"]
         if kind in {"ack", "turn_start"}:
@@ -147,9 +148,15 @@ def every_turn_ends(messages: list[dict]) -> None:
             orphans_opened.add(message["process"]["pid"])
         elif kind == "orphan_end":
             orphans_ended.add(message["process"]["pid"])
+        elif kind == "input_request":
+            assert message["request"]["id"] not in inputs_opened
+            inputs_opened.add(message["request"]["id"])
+        elif kind == "input_resolved":
+            inputs_ended[message["request"]] += 1
     assert opened - ended == set(), f"turns left hanging: {sorted(opened - ended)}"
     assert tasks_opened - tasks_ended == set(), sorted(tasks_opened - tasks_ended)
     assert orphans_opened - orphans_ended == set(), sorted(orphans_opened - orphans_ended)
+    assert inputs_opened == set(inputs_ended) and all(n == 1 for n in inputs_ended.values())
     final = messages[-1]["outstanding"]
     assert COUNTS <= set(final) and not any(final.values()), final
 

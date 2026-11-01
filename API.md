@@ -12,14 +12,14 @@ what moves a turn and `fallback.py` for what ends one no marker ended.
 ## Invocation
 
 ```bash
-agent-proxy [--agent claude|codex] [agent arguments...]
+agent-proxy [--agent claude|codex] [--user-input] [agent arguments...]
 ```
 
 The proxy spawns one inner agent, reads line-delimited JSON commands on
 stdin, and writes line-delimited JSON messages on stdout. One client per
 process; the client owns the process's lifetime.
 
-`--agent` is the one argument the proxy keeps for itself. `claude`, the
+`--agent` and `--user-input` are arguments the proxy keeps for itself. `claude`, the
 default, is an interactive `claude` on a pty, and everything below this
 section describes it unless it says otherwise. `codex` is `codex app-server`
 over JSON-RPC, with the same commands and messages; what differs is in
@@ -33,7 +33,7 @@ passthrough:
 |---|---|
 | print-mode flags dropped | `-p`, `--print`, `--verbose`, `--input-format`, `--output-format` are removed — they would turn off the TUI the design depends on |
 | permissions skipped | `--dangerously-skip-permissions` is added unless the caller passed it |
-| one tool denied | `AskUserQuestion` is folded into `--disallowedTools`, ahead of any `--`; it waits on a human keystroke no client can send |
+| questions disabled by default | `AskUserQuestion` is added to `--disallowedTools` unless `--user-input` enables the question bridge; explicit caller denials are always preserved |
 | explicit autocompact window | `--autocompact 1m` is added unless the caller supplies `--autocompact value` or `--autocompact=value` before `--`; prevents the optional window-size dialog from blocking queued prompts |
 | session flags rewritten | the proxy resolves the session itself and passes a canonical `--session-id` / `--resume` pair, replacing whatever session flags the caller wrote |
 
@@ -79,6 +79,7 @@ Two things worth knowing:
 
 | Variable | Default | What it does |
 |---|---|---|
+| `AGENTPROXY_INPUT_TIMEOUT_S` | `86400` | unanswered-question deadline in seconds with `--user-input`; positive and finite, at most `31536000` (one year); independent of turn fallbacks |
 | `AGENTPROXY_LOG` | unset | path to a debug log of pty bytes, stdin lines and state transitions |
 | `AGENTPROXY_FALLBACK_IDLE_S` | `8` | footer idle + transcript quiet for this long ends a turn |
 | `AGENTPROXY_FALLBACK_QUIET_S` | `60` | pty silent + transcript quiet for this long ends a turn |
@@ -162,19 +163,22 @@ aggregate — use whichever suits.
 
 ## Commands
 
-Write one JSON object per line to stdin and flush. Three are understood:
+Write one JSON object per line to stdin and flush. The first three commands are
+always available; `answer` requires `--user-input`:
 
 ```json
 {"type": "submit", "text": "what does load_timeout_id do?", "ref": "c-17"}
 {"type": "status", "ref": "c-18"}
 {"type": "cancel", "turn": "t-6", "ref": "c-19"}
+{"type": "answer", "request": "i-1", "answers": {"q-1": {"choices": ["o-2"]}}, "ref": "c-20"}
 ```
 
 `submit` is answered by an `ack` before anything reaches the inner `claude` —
 it never waits on the pty. `text` must be a non-empty string. `status` is
 answered by a `state` message, also without touching the keyboard. `cancel`
 names a turn by the id its `ack` carried and is answered by an `ack` naming
-that same turn — see [Cancelling a turn](#cancelling-a-turn).
+that same turn — see [Cancelling a turn](#cancelling-a-turn). `answer` supplies
+a reply or dismisses a pending question; see [User input](#user-input).
 
 A line that is not JSON, not an object, has an unknown `type`, is a `submit`
 with no usable `text`, or a `cancel` naming a turn that cannot be cancelled,
@@ -263,8 +267,8 @@ What a client may rely on:
 
 | `type` | When | Fields beyond the envelope |
 |---|---|---|
-| `ready` | first message of the session, always `seq` 1 | `session_id` — always a real id, see [Sessions](#sessions); `agent` — `"claude"`, the inner agent that id belongs to |
-| `ack` | a `submit` or a `cancel` was accepted | `ref` if the command carried one (`turn` carries the new id, or the id being cancelled) |
+| `ready` | first message of the session, always `seq` 1 | `session_id` — always a real id, see [Sessions](#sessions); `agent`, the inner agent that id belongs to; `capabilities.user_input: true` with `--user-input` |
+| `ack` | a `submit`, `cancel` or `answer` was accepted | `ref` if the command carried one (`turn` carries the new id, or the id being cancelled) |
 | `turn_start` | a turn began running | `caused_by` when a background task woke it |
 | `text` | assistant prose | `text` |
 | `thinking` | assistant reasoning | `text` |
@@ -275,7 +279,9 @@ What a client may rely on:
 | `task_end` | background work ended | `task` (`{id, kind}`), `status`, `exit_code` (int or null), `output` (string or null) |
 | `orphan_start` | a process was reparented to the proxy | `process` (`{pid, command}`); see [Orphaned processes](#orphaned-processes) |
 | `orphan_end` | an adopted process ended, or the proxy stopped watching it | `process`, `status` (`exited`, `killed`, `abandoned`), `exit_code` (int or null), `signal` (int or null) |
-| `state` | reply to `status` | `turns`, `tasks`, `orphans` (Linux only), `ref` if the query carried one |
+| `state` | reply to `status` | `turns`, `tasks`, `orphans` (Linux only), `input_requests` when user input is enabled, `ref` if the query carried one |
+| `input_request` | the agent asks the client a question | `request` with id, blocking flag, deadline and questions; see [User input](#user-input) |
+| `input_resolved` | a question no longer needs an answer | `request` id and `reason`; see [User input](#user-input) |
 | `error` | a rejected command, or a session failure | `error` (string), `ref` if a rejected command carried one |
 
 Notes on the fields that carry weight:
@@ -326,6 +332,126 @@ It lists turns, not the `ref`s that claimed them, so **keep your own ref-to-id
 map across a reconnect**. A turn id in the reply can be recognised as one you
 were already waiting on; it cannot be re-attached afterwards to a prompt whose
 `ack` you never read.
+
+## User input
+
+Unreleased addition, available from the working checkout. Launch with
+`--user-input` to relay structured questions for either backend:
+
+```bash
+AGENTPROXY_INPUT_TIMEOUT_S=3600 agent-proxy --user-input
+AGENTPROXY_INPUT_TIMEOUT_S=3600 agent-proxy --agent codex --user-input
+```
+
+The default deadline is **24 hours** (`86400` seconds). Set
+`AGENTPROXY_INPUT_TIMEOUT_S` before launching to choose another positive,
+finite duration, up to one year. Invalid configuration produces a startup
+`error`, exit 2, and no `ready`. This is separate from turn fallback timers.
+Each question request carries its actual `expires_at` in UTC; enforcement uses
+a monotonic clock. Deadline expiry dismisses the question without choosing an
+option and emits `input_resolved` with `reason: "expired"`.
+
+`ready.capabilities.user_input: true` announces the enabled extension.
+Without the flag, that capability and the input count/state fields are absent,
+Claude questions remain disabled, and Codex input requests receive empty
+answers as before. A client must be able to render and answer questions before
+opting in. Permission requests, plan approval and general MCP forms retain
+their existing policies.
+
+A real backend question emits `input_request`. The usual `seq`, `turn` and
+`outstanding` envelope is present; payload fields are shown here:
+
+```json
+{"type":"input_request","request":{"id":"i-1","blocking":true,"expires_at":"2026-11-01T18:00:00+00:00","questions":[{"id":"q-1","header":"Color","question":"Which color?","options":[{"id":"o-1","label":"Blue","description":"blue"},{"id":"o-2","label":"Green","description":"green"}],"multi_select":false,"allow_text":true,"secret":false}]}}
+```
+
+Each request and question has stable identity for the life of that request.
+Option ids are scoped to their question. Preserve option labels, descriptions
+and headers when displaying the form. Honor `multi_select` and `allow_text`;
+`secret` marks text that the UI should mask. This marker does not redact the
+proxy's existing diagnostic logs, so keep those disabled for secret answers.
+Questions written only in assistant prose remain ordinary text.
+
+Answer by request and question ids, with the client's usual optional `ref`:
+
+```json
+{"type":"answer","request":"i-1","answers":{"q-1":{"choices":["o-2"]}},"ref":"pick-7"}
+```
+
+For a free-text reply, use `{"text":"Teal"}` instead of `choices`. For a
+multiselect question, `choices` can contain several distinct option ids.
+Answer every question in one batch. Unknown ids, omitted questions, invalid
+selections, empty text, mixing text with choices, and repeated or stale replies
+produce `error` with the command's `ref`, without sending any partial answer.
+Answers continue the original interaction and never create another user turn.
+
+The immediate `ack` names both the existing `turn` and `request`, and echoes
+`ref`. It means the answer was accepted for delivery. The request becomes
+`answering`, so another answer is rejected. After backend confirmation:
+
+```json
+{"type":"input_resolved","request":"i-1","reason":"answered"}
+```
+
+`input_resolved` also carries the original turn reference, including when a
+nonblocking question resolves after that turn's EOT. Its reasons are
+`answered`, `dismissed`, `expired`, `cancelled`, `backend_closed` and `error`.
+Each request resolves once. A backend clearing an unanswered request produces
+`backend_closed`; it is no longer answerable. A delivery confirmation missing
+for 30 seconds fails the session rather than leaving a permanent wait.
+
+To dismiss without selecting anything, send:
+
+```json
+{"type":"answer","request":"i-1","dismiss":true,"ref":"skip-7"}
+```
+
+Do not include `answers` with `dismiss`. Dismissal closes the question and
+allows the agent to react. `cancel` still names a user turn and requests its
+interruption, observed through its normal EOT. Cancelling resolves that turn's
+pending questions as `cancelled`. Questions from unowned turns can be
+answered or dismissed; the existing restriction on cancelling unowned turns
+still applies. EOF dismisses pending questions, including any that arrive
+while the session drains. Failure and shutdown close them with `error`.
+
+With this extension, `outstanding.input` on every message is the number of
+requests still pending or awaiting answer confirmation. It overlaps the turn
+count deliberately and is not a count of additional turns. The resolution
+message already carries the reduced count. A `status` reply includes complete
+`input_requests`, each with the same question payload plus its `turn` and
+`state` (`pending` or `answering`). This is sufficient to restore the form
+without any earlier messages. Request ids are process-local and may be reused after a restart. Discard the
+old request state when starting a new proxy, even when resuming the same
+agent session; do not send an id retained from the previous process.
+
+Only `blocking: true` suspends the owning turn's normal idle/quiet/stall EOT
+fallbacks while a human answer is pending. The input deadline still applies.
+`submit` acknowledges and queues another prompt during that wait. On answer or
+dismissal, turn clocks restart. A nonblocking question does not hold its turn
+open, and can remain answerable after EOT until the backend clears it, its own
+deadline expires, or the session closes. Backend turn endings remain
+authoritative in either case.
+
+### Backend requirements
+
+Claude input support requires **Claude Code >= 2.1.316**, the validated feature
+floor; ordinary sessions keep the existing 2.1.221 floor. A private Unix socket
+and process-local `PreToolUse` hook collect structured `AskUserQuestion` input
+and return the client's answer. Matching results confirm delivery. Claude
+remains an interactive TUI. Caller settings and hook lists are preserved, and
+no saved settings are written. `--bare` and disabled hooks are incompatible
+and rejected. Main-session questions are supported; a hook naming another
+session is declined explicitly rather than attributed to the wrong turn.
+
+Codex support is validated on **0.163.0** and uses
+`item/tool/requestUserInput` / `serverRequest/resolved`. The child gets
+`features.default_mode_request_user_input=true` unless the caller supplies a
+feature override with `-c`; no collaboration mode or saved configuration is
+changed. An explicit disable may leave the tool unavailable. Codex's native
+`isBlocking` flag is preserved; the inspected schema offers single-selection
+questions. `isOther` permits text, and `isSecret` supplies the secret marker.
+An optional native `autoResolutionMs` is exposed as `auto_resolution_ms`,
+including in status, but does not authorize choosing a default answer.
 
 ## Orphaned processes
 

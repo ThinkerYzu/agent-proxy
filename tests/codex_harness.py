@@ -28,7 +28,8 @@ TICK_S = 0.05
 class CodexSessionUnderTest:
     """One proxied codex session, driven a tick at a time."""
 
-    def __init__(self, stall_after_s: float = 1800.0, unmatched_after_s: float = 60.0) -> None:
+    def __init__(self, stall_after_s: float = 1800.0, unmatched_after_s: float = 60.0, *, user_input=False, input_timeout_s=86400) -> None:
+        from agentproxy.user_input import InputRequests
         self.server = FakeAppServer()
         self.out = io.StringIO()
         self.now = 0.0
@@ -48,6 +49,7 @@ class CodexSessionUnderTest:
             clock=lambda: self.now,
             stall_after_s=stall_after_s,
             unmatched_after_s=unmatched_after_s,
+            inputs=InputRequests(input_timeout_s, clock=lambda: self.now) if user_input else None,
         )
         self.proxy.announce_ready(thread_id)
         self.proxy.on_messages(self.peer.feed(self.server.take_output()))

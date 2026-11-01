@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -32,6 +34,8 @@ from agentproxy.io_loop import (
     run as run_loop,
 )
 from agentproxy.liveness import Liveness
+from agentproxy.input_bridge import InputBridge
+from agentproxy.user_input import InputRequests, input_timeout
 from agentproxy.orphans import OrphanReaper
 from agentproxy.protocol import Emitter
 from agentproxy.proxy import AGENT_CLAUDE, Proxy
@@ -84,6 +88,10 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--user-input", action="store_true",
+        help="relay agent questions to the client (AGENTPROXY_INPUT_TIMEOUT_S defaults to 86400)",
+    )
+    parser.add_argument(
         "--agent",
         choices=(AGENT_CLAUDE, AGENT_CODEX),
         default=AGENT_CLAUDE,
@@ -131,6 +139,7 @@ def serve(
     stdin: IO[bytes],
     stdout: IO[str],
     passthrough: Sequence[str] = (),
+    *, user_input: bool = False,
 ) -> int:
     """Run one proxied session, from spawn to the last message on stdout.
 
@@ -142,9 +151,21 @@ def serve(
     # Stamped before the spawn so a forked session's backfill — which carries
     # the original's timestamps — is entirely in the past by this clock.
     started_at = datetime.now(timezone.utc)
+    bridge = None
+    inputs = None
     try:
         session_id, tail_mode, argv = inner_claude.resolve_session(passthrough)
-    except inner_claude.SessionArgumentError as bad_flags:
+        if user_input:
+            inputs = InputRequests(input_timeout())
+            version = subprocess.check_output(["claude", "--version"], text=True, timeout=10)
+            match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
+            if not match or tuple(map(int, match.groups())) < (2, 1, 316):
+                raise ValueError("--user-input requires Claude Code >= 2.1.316")
+            bridge = InputBridge()
+            argv = bridge.argv(argv, inputs.timeout_s)
+    except (ValueError, OSError, subprocess.SubprocessError) as bad_flags:
+        if bridge is not None:
+            bridge.close()
         Emitter(TurnTracker(), out=stdout).emit(
             {"type": "error", "error": str(bad_flags)}
         )
@@ -159,9 +180,14 @@ def serve(
     if subreaper_problem is not None:
         log.log_text("proxy", f"not a subreaper, orphans uncounted: {subreaper_problem}")
 
-    driver = PtyDriver(
-        inner_claude.build_argv(argv), env=inner_claude.build_env(dict(os.environ))
-    )
+    try:
+        driver = PtyDriver(
+            inner_claude.build_argv(argv, user_input=user_input), env=inner_claude.build_env(dict(os.environ))
+        )
+    except Exception:
+        if bridge is not None:
+            bridge.close()
+        raise
     # The inner is a direct child too, but `PtyDriver` waits on it itself.
     reaper = None if subreaper_problem else OrphanReaper(exclude=(driver.pid,))
 
@@ -213,6 +239,8 @@ def serve(
         reaper=reaper,
         kill_orphans=KILL_ORPHANS,
         send_keys=_send_keys,
+        inputs=inputs,
+        bridge=bridge,
     )
 
     # `on_query` answers the inner's terminal-capability probes (DA1,
@@ -258,6 +286,8 @@ def serve(
         # user message when it writes the transcript — corrupting the session
         # a client may later resume. SIGTERM alone is enough there.
         driver.close(send_exit=(outcome == "stop"))
+        if bridge is not None:
+            bridge.close()
         stdout.flush()
 
     # Requirement 11 at the process boundary: whatever cut the loop short,
@@ -273,8 +303,8 @@ def serve(
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args, passthrough = _build_parser().parse_known_args(argv)
     if args.agent == AGENT_CODEX:
-        return serve_codex(sys.stdin.buffer, sys.stdout, passthrough=passthrough)
-    return serve(sys.stdin.buffer, sys.stdout, passthrough=passthrough)
+        return serve_codex(sys.stdin.buffer, sys.stdout, passthrough=passthrough, user_input=args.user_input)
+    return serve(sys.stdin.buffer, sys.stdout, passthrough=passthrough, user_input=args.user_input)
 
 
 if __name__ == "__main__":

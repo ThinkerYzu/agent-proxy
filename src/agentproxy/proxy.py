@@ -22,7 +22,9 @@ import time
 from typing import Callable, Optional, Sequence
 
 from agentproxy import log
-from agentproxy.commands import CANCEL, STATUS, SUBMIT, Rejection, parse_command, tagged
+from agentproxy.commands import ANSWER, CANCEL, STATUS, SUBMIT, Rejection, parse_command, tagged
+from agentproxy.input_hook import denial
+from agentproxy.user_input import InputRequests
 from agentproxy.fallback import BASIS_UNMATCHED, FallbackEot
 from agentproxy.liveness import Liveness
 from agentproxy.orphans import OrphanReaper, orphan_end_event
@@ -77,6 +79,8 @@ class Proxy:
         kill_orphans: bool = False,
         send_keys: Optional[Callable[[Sequence[bytes]], None]] = None,
         clock: Callable[[], float] = time.monotonic,
+        inputs: Optional[InputRequests] = None,
+        bridge=None,
     ) -> None:
         self._tracker = tracker
         self._emitter = emitter
@@ -99,6 +103,11 @@ class Proxy:
         self._send_keys = send_keys
         self._clock = clock
         self._stdin_closed = False
+        self._inputs = inputs
+        self._bridge = bridge
+        self._session_id = None
+        self._hook_connections = {}
+        self._emitter.input_requests = inputs
         # Set when a cancelled prompt was seen handed back to the composer.
         # While set the send gate stays shut and each idle frame is a chance
         # to clear it; `_clear_sent_at` throttles the retries.
@@ -118,7 +127,11 @@ class Proxy:
         a later process. `agent` says which inner agent the id belongs to: a
         session id resumes only under the agent that made it.
         """
-        self._emit([{"type": "ready", "session_id": session_id, "agent": AGENT_CLAUDE}])
+        self._session_id = session_id
+        ready = {"type": "ready", "session_id": session_id, "agent": AGENT_CLAUDE}
+        if self._inputs is not None:
+            ready["capabilities"] = {"user_input": True}
+        self._emit([ready])
 
     def fail(self, reason: str) -> None:
         """Close out a session that cannot continue.
@@ -131,6 +144,8 @@ class Proxy:
         """
         log.log_text("proxy", f"session failed: {reason}")
         self._queue.drain()
+        if self._inputs is not None:
+            self._emit(self._inputs.close("error"))
         self._emit(self._tracker.fail_session(reason))
         if self._reaper is not None:
             self._emit(
@@ -170,12 +185,79 @@ class Proxy:
             return self._queue.accept(turn)
         if command.kind == STATUS:
             state = {"type": "state", **self._tracker.snapshot()}
+            if self._inputs is not None:
+                state["input_requests"] = self._inputs.snapshot()
             if self._reaper is not None:
                 state["orphans"] = [o.to_wire() for o in self._reaper.alive()]
             self._emit(tagged([state], command.ref))
             return None
+        if command.kind == ANSWER:
+            return self._answer(command)
         assert command.kind == CANCEL
         return self._cancel(command.turn, command.ref)
+
+    def _answer(self, command) -> None:
+        if self._inputs is None:
+            return self._reject("user input is not enabled", command.ref)
+        try:
+            request, native = self._inputs.accept(command.request, command.answers, command.dismiss)
+        except ValueError as exc:
+            return self._reject(str(exc), command.ref)
+        self._emit(tagged([{"type": "ack", "turn": request.turn, "request": request.id}], command.ref))
+        self._fallback.note_turn_start()
+        self._activity["last_activity"] = self._clock()
+        self._emit(self._inputs.send(request, native, "dismissed" if command.dismiss else "answered"))
+
+    def _on_hook(self, connection, payload) -> None:
+        tool_id = payload.get("tool_use_id")
+        if (payload.get("session_id") != self._session_id
+            or payload.get("tool_name") != "AskUserQuestion"
+            or not isinstance(tool_id, str) or not tool_id):
+            connection.respond(denial("agent-proxy cannot attribute this question to its session"))
+            self._reject("question hook has no valid main-session tool identity")
+            return
+        key = ("claude", tool_id)
+        event = payload.get("hook_event_name")
+        if event in ("PostToolUse", "PostToolUseFailure"):
+            self._emit(self._inputs.resolve(key, "error" if event == "PostToolUseFailure" else None))
+            connection.respond({})
+            return
+        if event != "PreToolUse" or not isinstance(payload.get("tool_input"), dict):
+            connection.respond(denial("unsupported question hook"))
+            return
+        if self._inputs.seen(key):
+            connection.respond(denial("duplicate question hook"))
+            return
+        self._emit(self._tracker.confirm_hook_turn())
+        turn = self._tracker.running_turn
+        original = payload["tool_input"]
+
+        def deliver(native, reason):
+            self._hook_connections.pop(connection, None)
+            if native is None:
+                connection.respond(denial(f"agent-proxy question {reason}"))
+            else:
+                connection.respond({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse", "permissionDecision": "allow",
+                    "updatedInput": {**original, "answers": {q: ", ".join(a) for q, a in native.items()}},
+                }})
+        try:
+            request_event = self._inputs.add(key, turn.ref(), original.get("questions"), "claude", True, deliver)
+        except ValueError as exc:
+            connection.respond(denial(str(exc)))
+            self._reject(str(exc))
+            return
+        self._hook_connections[connection] = key
+        self._emit([request_event])
+        if self._stdin_closed or turn.cancel_requested:
+            self._emit(self._inputs.close("cancelled" if turn.cancel_requested else "dismissed", turn.id))
+
+    def _hook_disconnected(self, connection) -> None:
+        key = self._hook_connections.pop(connection, None)
+        if key is not None:
+            self._emit(self._inputs.resolve(key, "error"))
+            # Fail the session rather than fall through to an unseen native selector.
+            raise RuntimeError("Claude question hook disconnected before receiving an answer")
 
     def _cancel(self, turn_id: str, ref: object) -> None:
         """Answer a `cancel`: `ack` it and act on the turn's state.
@@ -191,6 +273,8 @@ class Proxy:
         turn = self._tracker.turn(turn_id)
         assert turn is not None
         self._emit(tagged([{"type": "ack", "turn": turn.ref()}], ref))
+        if self._inputs is not None:
+            self._emit(self._inputs.close("cancelled", turn_id))
         if action == CANCEL_WITHDRAWN:
             self._queue.withdraw(turn_id)
             log.log_text("proxy", f"{turn_id} withdrawn before it was typed")
@@ -219,6 +303,8 @@ class Proxy:
     def on_stdin_eof(self) -> None:
         """The client closed its end; finish what is in flight and stop."""
         self._stdin_closed = True
+        if self._inputs is not None:
+            self._emit(self._inputs.close("dismissed"))
 
     # ------------------------------------------------------------------
     # Sending
@@ -340,6 +426,12 @@ class Proxy:
             self._fallback.note_transcript()
             self._activity["last_activity"] = time.monotonic()
             self._emit(self._tracker.on_entry(entry))
+        if self._bridge is not None:
+            self._bridge.poll(self._on_hook, self._hook_disconnected)
+        if self._inputs is not None:
+            self._emit(self._inputs.tick())
+            if any(r.blocking and r.state == "pending" for r in self._inputs.requests.values()):
+                self._activity["last_activity"] = self._clock()
         self._interrupt_if_due()
         self._poll_orphans()
 
@@ -348,6 +440,8 @@ class Proxy:
         if typed is None:
             self._fallback.note_typed_cleared()
         if running is None and typed is None:
+            return
+        if running is not None and self._inputs is not None and self._inputs.blocks(running.id):
             return
         # Absent `last_pty` means the io loop has not read yet, which is the
         # opposite of silence — default to now rather than to the epoch, so a
@@ -418,6 +512,15 @@ class Proxy:
         the fallback fires on the tick it began.
         """
         for event in events:
+            if self._inputs is not None:
+                if event.get("type") == "tool_result":
+                    self._emit(self._inputs.resolve(("claude", event.get("tool_use_id")),
+                                                   "error" if event.get("is_error") else None))
+                elif event.get("type") == "turn_end":
+                    self._emit(self._inputs.close("backend_closed", event["turn"]["id"]))
+                elif event.get("type") == "input_resolved":
+                    self._fallback.note_turn_start()
+                    self._activity["last_activity"] = self._clock()
             if event.get("type") == "turn_start":
                 self._fallback.note_turn_start()
             if event.get("type") == "task_end":

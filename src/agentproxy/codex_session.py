@@ -104,6 +104,14 @@ class CodexSession:
                 return codex_id
         return None
 
+    def turn_ref_of(self, codex_id: str) -> Optional[dict]:
+        """The native turn's stable proxy identity, including after its EOT."""
+        for turn_id in self._turns.get(codex_id, ()):
+            turn = self._tracker.turn(turn_id)
+            if turn is not None:
+                return turn.ref()
+        return None
+
     def on_turn_started_response(
         self, result: Optional[dict], error: Optional[dict]
     ) -> list[dict]:

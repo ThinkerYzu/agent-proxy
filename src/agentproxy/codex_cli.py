@@ -35,6 +35,7 @@ from agentproxy.orphans import OrphanReaper
 from agentproxy.protocol import Emitter
 from agentproxy.submit_queue import SubmitQueue
 from agentproxy.turn_tracker import TurnTracker
+from agentproxy.user_input import InputRequests, input_timeout
 
 
 # How long each startup request may take. `thread/start` took 0.8 s cold in
@@ -85,6 +86,7 @@ def serve_codex(
     stdin: IO[bytes],
     stdout: IO[str],
     passthrough: Sequence[str] = (),
+    *, user_input: bool = False,
 ) -> int:
     """Run one codex-backed session, from spawn to the last message on stdout.
 
@@ -95,7 +97,13 @@ def serve_codex(
     cwd = os.getcwd()
     try:
         plan = inner_codex.plan(passthrough, cwd, binary=CODEX_BIN)
-    except inner_codex.CodexArgumentError as bad:
+        inputs = InputRequests(input_timeout()) if user_input else None
+        if user_input and not any(
+            arg.split("=", 1)[0].strip() in ("features.default_mode_request_user_input", "features")
+            for arg in plan.server_argv
+        ):
+            plan.server_argv += ["-c", "features.default_mode_request_user_input=true"]
+    except ValueError as bad:
         return _startup_error(stdout, str(bad))
 
     subreaper_problem = orphans.become_subreaper()
@@ -128,7 +136,7 @@ def serve_codex(
 
     peer = AppServerPeer(write)
     try:
-        thread_id = _open_thread(peer, plan, read, cwd)
+        thread_id = _open_thread(peer, plan, read, cwd, user_input=user_input)
     except (AppServerError, OSError) as failure:
         _close(server)
         return _startup_error(stdout, str(failure))
@@ -147,6 +155,7 @@ def serve_codex(
         peer=peer,
         reaper=reaper,
         kill_orphans=os.environ.get("AGENTPROXY_KILL_ORPHANS", "").lower() in ("1", "true", "yes"),
+        inputs=inputs,
     )
     proxy.announce_ready(thread_id)
     # Whatever the server said while startup waited on its own answers.
@@ -169,11 +178,12 @@ def serve_codex(
     return 0
 
 
-def _open_thread(peer: AppServerPeer, plan: inner_codex.CodexPlan, read, cwd: str) -> str:
+def _open_thread(peer: AppServerPeer, plan: inner_codex.CodexPlan, read, cwd: str, *, user_input: bool = False) -> str:
     """Steps 3 and 4 of startup; returns the thread id `ready` will name."""
     peer.call(
         "initialize",
-        {"clientInfo": {"name": "agent-proxy", "version": _version()}},
+        {"clientInfo": {"name": "agent-proxy", "version": _version()},
+         **({"capabilities": {"experimentalApi": True}} if user_input else {})},
         read,
         STARTUP_TIMEOUT_S,
     )

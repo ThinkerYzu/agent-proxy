@@ -381,6 +381,16 @@ class TurnTracker:
         self._running_turn = turn
         return [self._turn_start(turn)]
 
+    def confirm_hook_turn(self) -> list[dict]:
+        """A real main-session hook confirms work, even before transcript flush."""
+        if self._running_turn is not None:
+            return []
+        if self._candidate_turn is not None:
+            return self._confirm_candidate()
+        if self._typed_turn is not None:
+            return self.bind_typed()
+        return self.open_unowned()[1]
+
     def open_unowned(self, caused_by: Optional[str] = None) -> tuple[Optional[Turn], list[dict]]:
         """Open a running turn the proxy did not prompt, and announce it.
 

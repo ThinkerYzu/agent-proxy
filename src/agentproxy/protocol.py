@@ -41,6 +41,7 @@ class Emitter:
         self._out = out if out is not None else sys.stdout
         self._extra_counts = extra_counts
         self._seq = 0
+        self.input_requests = None
 
     @property
     def seq(self) -> int:
@@ -58,6 +59,8 @@ class Emitter:
         counts = self._tracker.outstanding()
         if self._extra_counts is not None:
             counts.update(self._extra_counts())
+        if self.input_requests is not None:
+            counts["input"] = self.input_requests.count()
         return counts
 
     def emit(self, event: dict) -> dict:

@@ -53,6 +53,7 @@ class FakeAppServer:
         self._steps_left: list[str] = []
         self._open_commands: dict[str, tuple[str, int]] = {}
         self._waiting_approval: dict[object, str] = {}
+        self._waiting_input: dict[object, str] = {}
         self.thread_id: Optional[str] = None
         self.received: list[dict] = []
         self.answers: list[dict] = []
@@ -151,6 +152,13 @@ class FakeAppServer:
         self._later(1, self._next_step)
 
     def _on_answer(self, message: dict) -> None:
+        input_turn = self._waiting_input.pop(message.get("id"), None)
+        if input_turn is not None:
+            self._say("serverRequest/resolved", threadId=self.thread_id, requestId=message["id"])
+            if input_turn == self._active:
+                self._agent_message(input_turn, json.dumps(message.get("result")))
+                self._later(1, self._next_step)
+            return
         turn_id = self._waiting_approval.pop(message.get("id"), None)
         if turn_id is None or turn_id != self._active:
             return
@@ -213,6 +221,14 @@ class FakeAppServer:
             self._waiting_approval[self._request_seq] = turn_id
             self._out.append({"id": self._request_seq, "method": "item/commandExecution/requestApproval",
                               "params": {"threadId": self.thread_id, "turnId": turn_id, "itemId": "exec-a"}})
+        elif step == "ask":
+            self._request_seq += 1
+            self._waiting_input[self._request_seq] = turn_id
+            self._out.append({"id": self._request_seq, "method": "item/tool/requestUserInput",
+                              "params": {"threadId": self.thread_id, "turnId": turn_id, "itemId": "question-a",
+                                         "isBlocking": True, "questions": [{"id":"color", "header":"Color",
+                                         "question":"Which color?", "isOther":True, "options":[
+                                             {"label":"Blue", "description":"blue"}, {"label":"Green", "description":"green"}]}]}})
         elif step == "spawn":
             self._subagent(turn_id)
         elif step == "fail":

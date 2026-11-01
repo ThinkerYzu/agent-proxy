@@ -50,6 +50,8 @@ class ReferenceClient:
         self.counts: dict = dict(EMPTY)
         self.busy = False
         self.errors: list[str] = []
+        self.input_requests: dict[str, dict] = {}
+        self.answer_refs: dict[object, str] = {}
 
     # ------------------------------------------------------------------
     # Reading the stream
@@ -69,7 +71,14 @@ class ReferenceClient:
 
         kind = message["type"]
         turn = message.get("turn") or {}
-        if kind == "ack":
+        if kind == "ack" and "request" in message:
+            if "ref" in message:
+                self.answer_refs[message["ref"]] = message["request"]
+        elif kind == "input_request":
+            self.input_requests[message["request"]["id"]] = {**message["request"], "turn": turn}
+        elif kind == "input_resolved":
+            self.input_requests.pop(message["request"], None)
+        elif kind == "ack":
             self.open_user.add(turn["id"])
             if "ref" in message:
                 self.turn_of[message["ref"]] = turn["id"]
@@ -115,6 +124,7 @@ class ReferenceClient:
         self.open_unowned = {t["id"] for t in state["turns"] if t["kind"] == "unowned"}
         self.open_tasks = {task["id"]: task["kind"] for task in state["tasks"]}
         self.open_orphans = {o["pid"] for o in state.get("orphans", ())}
+        self.input_requests = {r["id"]: r for r in state.get("input_requests", ())}
         self.queued = {t["id"] for t in state["turns"] if t["state"] == "queued"}
         self.running = {t["id"] for t in state["turns"] if t["state"] == "running"}
 
@@ -157,6 +167,8 @@ class ReferenceClient:
         }
         if "orphan" in self.counts:
             derived["orphan"] = len(self.open_orphans)
+        if "input" in self.counts:
+            derived["input"] = len(self.input_requests)
         return derived
 
     def turn_for(self, ref: object) -> Optional[str]:

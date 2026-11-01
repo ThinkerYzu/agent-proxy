@@ -7,8 +7,8 @@ jobs:
   can pass `--resume`, `--model` or anything else straight through.
 - **Harden the spawn**, so the proxy never meets a screen it cannot answer:
   no permission prompts, no optional autocompact suggestion, and no
-  `AskUserQuestion` selector, which blocks a
-  turn on a keystroke no client can send and deadlocks the session.
+  `AskUserQuestion` selector unless a question bridge is enabled for this
+  launch. The bridge returns the client's answer as structured hook input.
 - **Know the transcript path up front** by resolving a session id for every
   invocation, so the tailer opens a deterministic file and the proxy can name
   the session before it types anything.
@@ -31,8 +31,8 @@ from agentproxy.transcript_tailer import PROJECTS_ROOT, encode_cwd
 _FLAGS_WITH_VALUE = {"--input-format", "--output-format"}
 _FLAGS_BOOLEAN = {"-p", "--print", "--verbose"}
 
-# The built-in tool the proxy can never satisfy: it renders a TUI selector and
-# waits for a human keystroke, so the turn never ends and no end-of-turn ever
+# Disabled unless the client opts into the structured question bridge: the tool
+# otherwise waits for a human keystroke, so the turn never ends and no end-of-turn ever
 # fires. `--dangerously-skip-permissions` does not cover it — that governs
 # permission checks, not tool inventory — so it has to be disallowed by name.
 _INTERACTIVE_TOOL = "AskUserQuestion"
@@ -63,9 +63,11 @@ def build_env(base: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def build_argv(passthrough: Sequence[str]) -> list[str]:
+def build_argv(passthrough: Sequence[str], *, user_input: bool = False) -> list[str]:
     """Compose the inner `claude` command line from the caller's arguments."""
-    forwarded = _deny_interactive_tool(filter_passthrough(passthrough))
+    forwarded = filter_passthrough(passthrough)
+    if not user_input:
+        forwarded = _deny_interactive_tool(forwarded)
     has_skip = any(
         arg == "--dangerously-skip-permissions"
         or arg.startswith("--dangerously-skip-permissions=")

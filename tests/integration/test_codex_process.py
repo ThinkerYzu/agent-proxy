@@ -113,3 +113,39 @@ def test_a_missing_codex_binary_is_reported(tmp_path):
     status, messages = run_proxy(tmp_path / "no-such-codex", tmp_path)
     assert status == 2
     assert "not found" in messages[0]["error"]
+
+
+def test_input_timeout_config_rejected_before_starting(codex_bin,tmp_path):
+    status,messages=run_proxy(codex_bin,tmp_path,args=['--user-input'],env_extra={'AGENTPROXY_INPUT_TIMEOUT_S':'nan'})
+    assert status == 2 and len(messages) == 1
+    assert messages[0]['type'] == 'error' and 'AGENTPROXY_INPUT_TIMEOUT_S' in messages[0]['error']
+
+
+@pytest.mark.parametrize('action',['answer','expire','eof'])
+def test_choice_round_trip_through_real_process(codex_bin,tmp_path,action):
+    from tests.live.test_live_session import Reader
+    env={**os.environ,'AGENTPROXY_CODEX_BIN':str(codex_bin),'AGENTPROXY_INPUT_TIMEOUT_S':'0.5' if action=='expire' else '60'}
+    proc=subprocess.Popen([sys.executable,'-m','agentproxy','--agent','codex','--user-input'],
+                          stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,cwd=tmp_path,env=env)
+    reader=Reader(proc)
+    def send(c):proc.stdin.write(json.dumps(c)+'\n');proc.stdin.flush()
+    try:
+        send({'type':'submit','text':'ask'})
+        messages=reader.wait_for(lambda ms:any(m['type']=='input_request' for m in ms),5)
+        request=next(m['request'] for m in messages if m['type']=='input_request')
+        assert messages[0]['capabilities']['user_input'] is True
+        assert messages[0]['outstanding']['input']==0
+        if action=='answer':
+            send({'type':'answer','request':request['id'],'answers':{'q-1':{'choices':['o-2']}},'ref':'pick'})
+        elif action=='eof':proc.stdin.close()
+        messages=reader.wait_for(lambda ms:any(m['type']=='turn_end' for m in ms),5)
+        resolved=[m for m in messages if m['type']=='input_resolved']
+        assert len(resolved)==1
+        assert resolved[0]['reason']=={'answer':'answered','expire':'expired','eof':'dismissed'}[action]
+        assert messages[-1]['outstanding']['input']==0
+        if action=='answer':
+            assert any(m.get('type')=='text' and 'Green' in m.get('text','') for m in messages)
+        if not proc.stdin.closed:proc.stdin.close()
+        assert proc.wait(timeout=5)==0
+    finally:
+        if proc.poll() is None:proc.kill();proc.wait()

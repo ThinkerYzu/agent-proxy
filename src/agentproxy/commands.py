@@ -1,7 +1,7 @@
 """The client's stdin commands, parsed the same way for every inner agent.
 
 A client cannot tell which agent is behind the proxy from how its commands
-are answered: `submit`, `status` and `cancel` are accepted, and a malformed
+are answered: `submit`, `status`, `cancel` and opt-in `answer` are accepted, and a malformed
 line is rejected, with the same words whichever backend acts on them. So the
 parsing lives here, apart from what each backend does with a command.
 """
@@ -16,6 +16,7 @@ from typing import Optional, Union
 SUBMIT = "submit"
 STATUS = "status"
 CANCEL = "cancel"
+ANSWER = "answer"
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,9 @@ class Command:
     ref: object = None
     text: Optional[str] = None
     turn: Optional[str] = None
+    request: Optional[str] = None
+    answers: object = None
+    dismiss: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,18 @@ def parse_command(line: str) -> Union[Command, Rejection]:
         return Command(SUBMIT, ref, text=text)
     if kind == STATUS:
         return Command(STATUS, ref)
+    if kind == ANSWER:
+        request_id = command.get("request")
+        if not isinstance(request_id, str) or not request_id:
+            return Rejection("answer needs a 'request' id", ref)
+        if "dismiss" in command and command["dismiss"] is not True:
+            return Rejection("dismiss must be true when supplied", ref)
+        dismiss = command.get("dismiss", False)
+        if dismiss and "answers" in command:
+            return Rejection("answer cannot contain both dismiss and answers", ref)
+        if not dismiss and not isinstance(command.get("answers"), dict):
+            return Rejection("answer needs an 'answers' object or dismiss:true", ref)
+        return Command(ANSWER, ref, request=request_id, answers=command.get("answers"), dismiss=dismiss)
     if kind == CANCEL:
         turn_id = command.get("turn")
         if not isinstance(turn_id, str) or not turn_id:

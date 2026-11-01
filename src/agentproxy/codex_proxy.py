@@ -21,7 +21,8 @@ from typing import Callable, Optional
 from agentproxy import log
 from agentproxy.app_server import AppServerPeer, Message, Notification, Response, ServerRequest
 from agentproxy.codex_session import CodexSession
-from agentproxy.commands import CANCEL, STATUS, SUBMIT, Rejection, parse_command, tagged
+from agentproxy.commands import ANSWER, CANCEL, STATUS, SUBMIT, Rejection, parse_command, tagged
+from agentproxy.user_input import InputRequests
 from agentproxy.fallback import BASIS_STALLED, BASIS_UNMATCHED, STALL_AFTER_S, UNMATCHED_AFTER_S
 from agentproxy.orphans import OrphanReaper, orphan_end_event
 from agentproxy.protocol import Emitter
@@ -39,10 +40,9 @@ AGENT_CODEX = "codex"
 # `task_end.output` is a preview, as on the claude path.
 TASK_OUTPUT_MAX_CHARS = 256
 
-# What the proxy answers each request codex can make of a client. None can be
-# served, since no person is there to approve or answer, and every one must
-# be answered: an unanswered request is a turn that never ends. Each is the
-# refusal its own schema defines.
+# Default refusals for requests this session cannot serve. User-input
+# requests bypass this table only when the client enabled their bridge.
+# Each refusal follows the native request schema.
 _REFUSALS: dict[str, dict] = {
     "item/commandExecution/requestApproval": {"decision": "decline"},
     "item/fileChange/requestApproval": {"decision": "decline"},
@@ -72,6 +72,7 @@ class CodexProxy:
         clock: Callable[[], float] = time.monotonic,
         stall_after_s: float = STALL_AFTER_S,
         unmatched_after_s: float = UNMATCHED_AFTER_S,
+        inputs: Optional[InputRequests] = None,
     ) -> None:
         self._tracker = tracker
         self._emitter = emitter
@@ -90,6 +91,9 @@ class CodexProxy:
         self._turn_start_id: Optional[int] = None
         self._typed_at: Optional[float] = None
         self._last_heard = clock()
+        self._inputs = inputs
+        self._emitter.input_requests = inputs
+        self._early_inputs: list[tuple[ServerRequest, float]] = []
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -97,7 +101,10 @@ class CodexProxy:
 
     def announce_ready(self, thread_id: str) -> None:
         """Tell the client the session is up: always the first message."""
-        self._emit([{"type": "ready", "session_id": thread_id, "agent": AGENT_CODEX}])
+        ready = {"type": "ready", "session_id": thread_id, "agent": AGENT_CODEX}
+        if self._inputs is not None:
+            ready["capabilities"] = {"user_input": True}
+        self._emit([ready])
 
     def fail(self, reason: str) -> None:
         """Close out a session that cannot continue, leaving nothing outstanding.
@@ -111,6 +118,9 @@ class CodexProxy:
         log.log_text("codex-proxy", f"session failed: {reason}")
         self._queue.drain()
         self._turn_start_id = None
+        if self._inputs is not None:
+            self._emit(self._inputs.close("error"))
+        self._early_inputs.clear()
         self._emit(self._tracker.fail_session(reason))
         if self._reaper is not None:
             self._emit([orphan_end_event(e) for e in self._reaper.shutdown(kill=self._kill_orphans)])
@@ -139,9 +149,13 @@ class CodexProxy:
             self._send_if_ready()
         elif command.kind == STATUS:
             state = {"type": "state", **self._tracker.snapshot()}
+            if self._inputs is not None:
+                state["input_requests"] = self._inputs.snapshot()
             if self._reaper is not None:
                 state["orphans"] = [o.to_wire() for o in self._reaper.alive()]
             self._emit(tagged([state], command.ref))
+        elif command.kind == ANSWER:
+            self._answer(command)
         else:
             assert command.kind == CANCEL
             self._cancel(command.turn, command.ref)
@@ -149,6 +163,21 @@ class CodexProxy:
     def on_stdin_eof(self) -> None:
         """The client closed its end; finish what is in flight and stop."""
         self._stdin_closed = True
+        if self._inputs is not None:
+            self._emit(self._inputs.close("dismissed"))
+
+    def _answer(self, command) -> None:
+        if self._inputs is None:
+            self._reject("user input is not enabled", command.ref)
+            return
+        try:
+            request, native = self._inputs.accept(command.request, command.answers, command.dismiss)
+        except ValueError as exc:
+            self._reject(str(exc), command.ref)
+            return
+        self._emit(tagged([{"type": "ack", "turn": request.turn, "request": request.id}], command.ref))
+        self._last_heard = self._clock()
+        self._emit(self._inputs.send(request, native, "dismissed" if command.dismiss else "answered"))
 
     def _cancel(self, turn_id: str, ref: object) -> None:
         """Answer a `cancel` by the turn's state, as `Proxy._cancel` does.
@@ -165,6 +194,8 @@ class CodexProxy:
         turn = self._tracker.turn(turn_id)
         assert turn is not None
         self._emit(tagged([{"type": "ack", "turn": turn.ref()}], ref))
+        if self._inputs is not None:
+            self._emit(self._inputs.close("cancelled", turn_id))
         if action == CANCEL_WITHDRAWN:
             self._queue.withdraw(turn_id)
         self._emit(events)
@@ -227,14 +258,59 @@ class CodexProxy:
             if isinstance(message, Response):
                 self._on_response(message)
             elif isinstance(message, ServerRequest):
-                self._refuse(message)
+                if self._inputs is not None and message.method == "item/tool/requestUserInput":
+                    self._on_input(message)
+                else:
+                    self._refuse(message)
             elif isinstance(message, Notification):
+                if (self._inputs is not None and message.method == "serverRequest/resolved"
+                    and message.params.get("threadId") == self._session.thread_id):
+                    key = ("codex", message.params.get("requestId"))
+                    self._emit(self._inputs.resolve(key))
+                    self._early_inputs = [(r, t) for r, t in self._early_inputs if r.id != message.params.get("requestId")]
                 self._emit(self._session.on_notification(message.method, message.params))
             if self._session.failure is not None:
                 self.fail(self._session.failure)
                 return
+        for request, arrived in list(self._early_inputs):
+            if self._session.turn_ref_of(request.params.get("turnId")) is not None:
+                self._early_inputs.remove((request, arrived))
+                self._on_input(request)
         self._interrupt_if_due()
         self._send_if_ready()
+
+    def _on_input(self, request: ServerRequest) -> None:
+        params = request.params
+        if (params.get("threadId") != self._session.thread_id
+            or not isinstance(params.get("turnId"), str)
+            or not isinstance(params.get("itemId"), str)
+            or not isinstance(params.get("isBlocking", True), bool)):
+            self._peer.respond_error(request.id, -32602, "input request has invalid session/turn/item identity")
+            return
+        turn = self._session.turn_ref_of(params["turnId"])
+        if turn is None:
+            if self._turn_start_id is not None:
+                if not any(r.id == request.id for r, _ in self._early_inputs):
+                    self._early_inputs.append((request, self._clock()))
+            else:
+                self._peer.respond_error(request.id, -32602, "input request names an unknown turn")
+            return
+        def deliver(native, reason):
+            self._peer.respond(request.id, {"answers": {} if native is None else {
+                q: {"answers": a} for q, a in native.items()}})
+        try:
+            event = self._inputs.add(("codex", request.id), turn, params.get("questions"),
+                                     "codex", params.get("isBlocking", True), deliver,
+                                     {"auto_resolution_ms": params["autoResolutionMs"]}
+                                     if params.get("autoResolutionMs") is not None else None)
+        except ValueError as exc:
+            self._peer.respond_error(request.id, -32602, str(exc))
+            return
+        if event is not None:
+            self._emit([event])
+        owner = self._tracker.turn(turn["id"])
+        if self._stdin_closed or (owner is not None and owner.cancel_requested):
+            self._emit(self._inputs.close("cancelled" if owner.cancel_requested else "dismissed", turn["id"]))
 
     def _on_response(self, response: Response) -> None:
         if response.method == "turn/start" and response.id == self._turn_start_id:
@@ -264,10 +340,19 @@ class CodexProxy:
     def on_tick(self) -> None:
         """One loop tick: orphans, the two fallbacks, and the next prompt."""
         self._poll_orphans()
+        if self._inputs is not None:
+            try:
+                self._emit(self._inputs.tick())
+                if any(self._clock() - arrived >= 30 for _, arrived in self._early_inputs):
+                    raise RuntimeError("input request's native turn was not bound within 30 seconds")
+            except RuntimeError as exc:
+                self.fail(str(exc))
+                return
         now = self._clock()
         running = self._tracker.running_turn
         typed = self._tracker.typed_turn
-        if running is not None and now - self._last_heard >= self._stall_after_s:
+        blocked = running is not None and self._inputs is not None and self._inputs.blocks(running.id)
+        if running is not None and not blocked and now - self._last_heard >= self._stall_after_s:
             log.log_text("codex-proxy", f"{running.id} ended on {BASIS_STALLED}")
             self._emit(self._tracker.end_running_turn(BASIS_STALLED))
         elif (
@@ -306,6 +391,14 @@ class CodexProxy:
 
     def _emit(self, events: list[dict]) -> None:
         for event in events:
+            if self._inputs is not None:
+                if event.get("type") == "input_resolved":
+                    self._last_heard = self._clock()
+                elif event.get("type") == "turn_end":
+                    # Nonblocking questions may remain answerable after their turn ends.
+                    for r in list(self._inputs.requests.values()):
+                        if r.blocking and r.turn["id"] == event["turn"]["id"]:
+                            self._emit(self._inputs.resolve(r.key, "backend_closed"))
             if event.get("type") == "task_end" and isinstance(event.get("output"), str):
                 event["output"] = event["output"][-TASK_OUTPUT_MAX_CHARS:] or None
             self._emitter.emit(event)

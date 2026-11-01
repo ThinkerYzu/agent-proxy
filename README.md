@@ -56,6 +56,15 @@ Both clients have migrated — [r2d2box](https://github.com/ThinkerYzu/r2d2box),
 which [agent-desktop-env](https://github.com/ThinkerYzu/agent-desktop-env)
 mounts, and a second client that is not public — so claudejson is retired.
 
+Structured agent questions are available as an **unreleased checkout addition**,
+not in the v0.2.0 tag.
+Use `agent-proxy --user-input` (or add `--agent codex`) with a client that
+supports the new `input_request` / `answer` exchange. Questions expire after
+24 hours by default; configure seconds with `AGENTPROXY_INPUT_TIMEOUT_S`.
+Claude input support requires Claude Code >= 2.1.316. See
+[API.md: User input](API.md#user-input) for the full contract and Codex setup.
+Existing invocations keep questions disabled.
+
 ## Installing
 
 The Claude backend requires **Claude Code ≥ 2.1.221** for its explicit
@@ -77,9 +86,10 @@ pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
 | What you want | Command |
 |---|---|
 | a prompt answered | `{"type": "submit", "text": "…"}` on stdin |
+| answer an agent question (with `--user-input`) | `{"type":"answer","request":"i-1","answers":{"q-1":{"choices":["o-2"]}}}` on stdin |
 | authoritative state, any time | `{"type": "status"}` on stdin |
 | a turn taken back — dropped if still queued, interrupted with `Esc` if running | `{"type": "cancel", "turn": "t-6"}` on stdin; the turn ends `outcome: "cancelled"` once the inner is seen to stop |
-| to know which `ack` is yours | add a `"ref"` of your own to either — it comes back on the answer |
+| to know which `ack` is yours | add a `"ref"` of your own to a command — it comes back on the answer |
 | the tracker against a recorded session, no `claude` | `python3 -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-drained` |
 
 ## What it emits
