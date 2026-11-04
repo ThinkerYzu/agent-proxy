@@ -17,17 +17,18 @@ the fake does. Only a live run answers that — see
 
 ## Cutting a release
 
-1. **Run the live tests.** They spend real quota — about two minutes for the
-   seven `claude` tests and four and a half for the three `codex` ones — and
-   they are the only check that reads what each binary actually writes:
+1. **Run all 20 live tests.** They spend real quota and take several minutes:
+   13 Claude cases and 7 Codex cases, including questions, permission
+   approval/denial/expiry, cancellation and session recovery. These are the
+   only checks that read what each installed binary actually writes:
 
    ```bash
    AGENTPROXY_RUN_LIVE=1 pytest -m live
    ```
 
-   The `codex` tests skip themselves when `codex` is not on the path, so a
-   pass with three skipped says nothing about `--agent codex`; run them with
-   `codex` installed and signed in with ChatGPT.
+   Install both binaries and sign Codex in with ChatGPT. Check that all
+   20 cases passed without skips. Record agent versions: native hooks,
+   transcript shapes and the experimental app-server protocol can change.
 
 2. **Bump the version** in the two places the release job compares — they must
    match the tag or the job stops before building:
@@ -43,21 +44,35 @@ the fake does. Only a live run answers that — see
 4. **Commit** the bump and release notes:
 
    ```bash
-   git add pyproject.toml src/agentproxy/__init__.py RELEASE-NOTES.md README.md RELEASING.md .github/workflows/release.yml
-   git commit -m "Prepare v0.2.0 release"
+   git add pyproject.toml src/agentproxy/__init__.py RELEASE-NOTES.md README.md API.md RELEASING.md .github/workflows/release.yml
+   git commit -m "Prepare v0.3.0 release"
    ```
 
 5. **Tag and push** — the tag is `v` + the version:
 
    ```bash
-   git tag v0.2.0
+   git tag v0.3.0
    git push origin master
-   git push origin v0.2.0
+   git push origin v0.3.0
    ```
 
 6. The Release workflow publishes to
    `https://github.com/ThinkerYzu/agent-proxy/releases`. If nothing appears,
    the Actions tab has the reason.
+
+## Preparing without publishing
+
+A request to prepare a release covers version changes, release notes and local
+validation. Keep the README's published release and installation example at
+the existing tag until publication. Build with `uv build` or `python -m build`,
+verify the wheel in a clean Python 3.11 environment, run the offline suite and
+replay with `--assert-drained`, and record artifact hashes. Do not create or
+push a tag or publish a GitHub Release during preparation.
+
+Before publishing a prepared release, update README status and installation examples,
+remove the preparation markers from API.md and RELEASE-NOTES.md, commit the
+prepared changes, then follow the tag/push steps above. Confirm hosted CI and
+the release workflow, and verify downloaded artifacts.
 
 ## Before you tag
 
@@ -85,7 +100,7 @@ description.
 Not on PyPI. Clients install from the tag:
 
 ```bash
-pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
+pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.3.0'
 ```
 
 which puts an `agent-proxy` binary on the path — the only thing

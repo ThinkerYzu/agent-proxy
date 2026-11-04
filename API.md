@@ -335,7 +335,7 @@ were already waiting on; it cannot be re-attached afterwards to a prompt whose
 
 ## Permission approvals
 
-Unreleased checkout addition:
+Added in v0.3.0:
 
 ```bash
 agent-proxy --no-bypass-permissions
@@ -400,7 +400,7 @@ selects a native permission option.
 
 ## User input
 
-Unreleased addition, available from the working checkout. Launch with
+Added in v0.3.0. Launch with
 `--user-input` to relay structured questions for either backend:
 
 ```bash
