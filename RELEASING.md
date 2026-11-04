@@ -45,15 +45,15 @@ the fake does. Only a live run answers that — see
 
    ```bash
    git add pyproject.toml src/agentproxy/__init__.py RELEASE-NOTES.md README.md API.md RELEASING.md .github/workflows/release.yml
-   git commit -m "Prepare v0.3.0 release"
+   git commit -m "Prepare vNEXT release"
    ```
 
-5. **Tag and push** — the tag is `v` + the version:
+5. **Tag and push**: replace `vNEXT` below with `v` plus the chosen package version:
 
    ```bash
-   git tag v0.3.0
+   git tag vNEXT
    git push origin master
-   git push origin v0.3.0
+   git push origin vNEXT
    ```
 
 6. The Release workflow publishes to
@@ -100,7 +100,7 @@ description.
 Not on PyPI. Clients install from the tag:
 
 ```bash
-pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.3.0'
+pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
 ```
 
 which puts an `agent-proxy` binary on the path — the only thing

@@ -1,4 +1,8 @@
-# agent-proxy v0.3.0
+# agent-proxy v0.3.0 (withdrawn)
+
+Withdrawn at the maintainer's request. The GitHub Release, its assets and the
+v0.3.0 tag have been removed. v0.2.0 is the latest published release.
+The notes below describe the retained implementation in this checkout.
 
 This release adds structured user questions and client permission approvals
 for both Claude and Codex. Existing invocations keep their current behavior.
@@ -58,18 +62,18 @@ Codex requires ChatGPT authentication; API-key billing remains disabled.
 The app-server protocol is experimental. Supported approvals are command/file
 operation decisions. Broader permission grants, legacy variants and file
 requests with a session `grantRoot` are explicitly refused. General MCP forms
-retain their existing policies. See the [v0.3.0 API](https://github.com/ThinkerYzu/agent-proxy/blob/v0.3.0/API.md)
+retain their existing policies. See the [checkout API](https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md)
 for the full contract.
 
 ## Installation
 
-Install from the release tag:
+Install the latest published release (without the input features above):
 
 ```bash
-pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.3.0'
+pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
 ```
 
-The GitHub Release also provides a wheel and source distribution.
+The v0.3.0 wheel and source distribution have been withdrawn.
 No PyPI publication is planned.
 
 ## Validation

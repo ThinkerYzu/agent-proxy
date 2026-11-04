@@ -17,8 +17,9 @@ module docstrings for the reasoning — `turn_tracker.py` on what moves a turn,
 
 ## Status
 
-**v0.3.0** adds structured questions and client permission approvals. See
-[release notes](RELEASE-NOTES.md) for changes since v0.2.0 and compatibility.
+Published release: **v0.2.0**. The v0.3.0 release was withdrawn at the
+maintainer's request. This checkout retains the structured-question and
+permission-approval implementation; see [notes](RELEASE-NOTES.md) for details.
 It runs:
 
 ```bash
@@ -57,7 +58,8 @@ Both clients have migrated — [r2d2box](https://github.com/ThinkerYzu/r2d2box),
 which [agent-desktop-env](https://github.com/ThinkerYzu/agent-desktop-env)
 mounts, and a second client that is not public — so claudejson is retired.
 
-v0.3.0 adds structured agent questions for both backends.
+This checkout adds structured agent questions for both backends. The withdrawn
+v0.3.0 tag is unavailable; these features are absent from v0.2.0.
 Use `agent-proxy --user-input` (or add `--agent codex`) with a client that
 supports the new `input_request` / `answer` exchange. Questions expire after
 24 hours by default; configure seconds with `AGENTPROXY_INPUT_TIMEOUT_S`.
@@ -70,7 +72,7 @@ native permission checks and ask through the client's choice-prompt flow.
 The flag implies `--user-input`. Permission prompts show the operation and
 Allow once / Deny choices, with the same configurable 24-hour deadline.
 Dismissal and expiry deny. See [permission approvals](API.md#permission-approvals)
-for backend policies and supported approval types. This is also new in v0.3.0.
+for backend policies and supported approval types. This feature is also absent from the published v0.2.0 release.
 
 ## Installing
 
@@ -83,7 +85,7 @@ as a dependency. Install from a release tag, which puts an `agent-proxy` on the
 path — the only thing a client needs from this repo:
 
 ```bash
-pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.3.0'
+pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
 ```
 
 [RELEASING.md](RELEASING.md) covers cutting one.
