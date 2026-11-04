@@ -1,9 +1,9 @@
 # Releasing agent-proxy
 
-The distribution name is **`agentproxy`**. The Python import is `agentproxy`
+The distribution name is **`thinkeryzu-agent-proxy`**. The Python import is `agentproxy`
 and the installed command is **`agent-proxy`**. uv installs packages from PyPI;
 there is no separate uv registry. Older GitHub tags used distribution metadata
-named `agent-proxy`; dependencies for upcoming releases must use `agentproxy`.
+named `agent-proxy`; dependencies for upcoming releases must use `thinkeryzu-agent-proxy`.
 
 PyPI publishing is integrated but has not yet been used by this repository.
 The v0.3.0 GitHub release remains withdrawn. Changing this workflow does not
@@ -26,6 +26,8 @@ uv and the new artifact/setup actions are pinned in release.yml.
 
 ## One-time Trusted Publisher setup
 
+The maintainer reports the `thinkeryzu-agent-proxy` publisher is pending.
+The fields below document that registration and can be used to verify it.
 Before the first PyPI release:
 
 1. Sign in to the maintainer's PyPI account and open
@@ -35,7 +37,7 @@ Before the first PyPI release:
 
    | Field | Value |
    |---|---|
-   | PyPI project | `agentproxy` |
+   | PyPI project | `thinkeryzu-agent-proxy` |
    | GitHub owner | `ThinkerYzu` |
    | Repository | `agent-proxy` |
    | Workflow filename | `release.yml` |
@@ -48,8 +50,9 @@ Before the first PyPI release:
    if it does not exist. The name must match both the workflow and PyPI.
 3. Confirm that the account owns the chosen name. A 404 response from PyPI
    indicates no current project; it does not reserve the name. The names
-   `agent-proxy` and `ai-agent-proxy` belong to other projects and must not be
-   substituted for `agentproxy`.
+   `agent-proxy` and `ai-agent-proxy` belong to other projects; `agentproxy`
+   was rejected for name similarity. None should be substituted for
+   `thinkeryzu-agent-proxy`.
 
 See the official [PyPI Trusted Publishing instructions](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
 and [uv GitHub Actions publishing guide](https://docs.astral.sh/uv/guides/integration/github/#publishing-to-pypi).
@@ -120,14 +123,14 @@ The publisher must be configured and an authorized version uploaded before
 these registry commands work for this project:
 
 ```bash
-uv tool install agentproxy
+uv tool install thinkeryzu-agent-proxy
 agent-proxy --help
-uvx --from agentproxy agent-proxy --help
-uv pip install agentproxy
-pip install agentproxy
+uvx --from thinkeryzu-agent-proxy agent-proxy --help
+uv pip install thinkeryzu-agent-proxy
+pip install thinkeryzu-agent-proxy
 ```
 
-Use `agentproxy==<VERSION>` instead of `agentproxy` to pin a release.
+Use `thinkeryzu-agent-proxy==<VERSION>` instead of `thinkeryzu-agent-proxy` to pin a release.
 Claude/Codex are separately installed binaries; pip/uv cannot install or sign
 in to them. The existing published GitHub tag remains available now:
 

@@ -12,7 +12,7 @@ from tools.check_release import check_release
 
 @pytest.fixture
 def project(tmp_path):
-    (tmp_path / 'pyproject.toml').write_text('[project]\nname = "agentproxy"\nversion = "0.4.0"\n')
+    (tmp_path / 'pyproject.toml').write_text('[project]\nname = "thinkeryzu-agent-proxy"\nversion = "0.4.0"\n')
     module = tmp_path / 'src/agentproxy/__init__.py'
     module.parent.mkdir(parents=True)
     module.write_text('__version__ = "0.4.0"\n')
@@ -20,22 +20,22 @@ def project(tmp_path):
     return tmp_path
 
 
-def distributions(root, wheel_name='agentproxy', wheel_version='0.4.0', source_name='agentproxy', source_version='0.4.0'):
+def distributions(root, wheel_name='thinkeryzu-agent-proxy', wheel_version='0.4.0', source_name='thinkeryzu-agent-proxy', source_version='0.4.0'):
     dist = root / 'dist'
     dist.mkdir()
-    with zipfile.ZipFile(dist / 'agentproxy-0.4.0-py3-none-any.whl', 'w') as wheel:
-        wheel.writestr('agentproxy-0.4.0.dist-info/METADATA',
+    with zipfile.ZipFile(dist / 'thinkeryzu_agent_proxy-0.4.0-py3-none-any.whl', 'w') as wheel:
+        wheel.writestr('thinkeryzu_agent_proxy-0.4.0.dist-info/METADATA',
                        f'Metadata-Version: 2.4\nName: {wheel_name}\nVersion: {wheel_version}\n')
     raw = f'Metadata-Version: 2.4\nName: {source_name}\nVersion: {source_version}\n'.encode()
-    with tarfile.open(dist / 'agentproxy-0.4.0.tar.gz', 'w:gz') as source:
-        entry = tarfile.TarInfo('agentproxy-0.4.0/PKG-INFO')
+    with tarfile.open(dist / 'thinkeryzu_agent_proxy-0.4.0.tar.gz', 'w:gz') as source:
+        entry = tarfile.TarInfo('thinkeryzu_agent_proxy-0.4.0/PKG-INFO')
         entry.size = len(raw)
         source.addfile(entry, io.BytesIO(raw))
     return dist
 
 
 def test_release_accepts_matching_tag_and_both_distribution_metadata(project):
-    assert check_release(project, 'v0.4.0', distributions(project)) == ('agentproxy', '0.4.0')
+    assert check_release(project, 'v0.4.0', distributions(project)) == ('thinkeryzu-agent-proxy', '0.4.0')
 
 
 @pytest.mark.parametrize('tag', ['v0.3.0', '0.4.0', 'master'])
@@ -66,7 +66,7 @@ def test_release_rejects_mismatched_artifact_name_or_version(project, metadata):
         check_release(project, 'v0.4.0', distributions(project, **metadata))
 
 
-@pytest.mark.parametrize('extra', ['old-package-0.2.0.whl', 'README.txt', 'agentproxy-0.3.0.tar.gz'])
+@pytest.mark.parametrize('extra', ['old-package-0.2.0.whl', 'README.txt', 'thinkeryzu_agent_proxy-0.3.0.tar.gz'])
 def test_release_rejects_stale_or_unexpected_output_files(project, extra):
     dist = distributions(project)
     (dist / extra).write_text('stale output')
@@ -76,14 +76,14 @@ def test_release_rejects_stale_or_unexpected_output_files(project, extra):
 
 def test_release_rejects_missing_sdist(project):
     dist = distributions(project)
-    (dist / 'agentproxy-0.4.0.tar.gz').unlink()
+    (dist / 'thinkeryzu_agent_proxy-0.4.0.tar.gz').unlink()
     with pytest.raises(ValueError, match='exactly one wheel'):
         check_release(project, 'v0.4.0', dist)
 
 
 def test_release_rejects_filename_disagreement_even_when_metadata_matches(project):
     dist = distributions(project)
-    wheel = dist / 'agentproxy-0.4.0-py3-none-any.whl'
+    wheel = dist / 'thinkeryzu_agent_proxy-0.4.0-py3-none-any.whl'
     wheel.rename(dist / 'different-0.4.0-py3-none-any.whl')
     with pytest.raises(ValueError, match='artifact filename'):
         check_release(project, 'v0.4.0', dist)
@@ -96,10 +96,10 @@ def test_codex_reports_the_renamed_distribution_version(monkeypatch):
         return '0.4.0'
     monkeypatch.setattr(codex_cli.metadata, 'version', version)
     assert codex_cli._version() == '0.4.0'
-    assert looked_up == ['agentproxy']
+    assert looked_up == ['thinkeryzu-agent-proxy']
 
 
 def test_release_allows_uv_build_ignore_marker_without_publishing_it(project):
     dist = distributions(project)
     (dist / '.gitignore').write_text('*\n')
-    assert check_release(project, 'v0.4.0', dist) == ('agentproxy', '0.4.0')
+    assert check_release(project, 'v0.4.0', dist) == ('thinkeryzu-agent-proxy', '0.4.0')

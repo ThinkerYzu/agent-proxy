@@ -80,23 +80,23 @@ The Claude backend requires **Claude Code ≥ 2.1.221** for its explicit
 `--autocompact 1m` launch default; caller overrides are described in
 [API.md](https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md#invocation).
 
-The PyPI distribution name is **`agentproxy`**; the command remains
+The PyPI distribution name is **`thinkeryzu-agent-proxy`**; the command remains
 **`agent-proxy`**. PyPI publishing is integrated for future authorized releases,
 but this repository has not uploaded a package there yet. uv uses PyPI and
 needs no separate publication step. Older GitHub tags used the distribution
-name `agent-proxy`; use `agentproxy` in requirements for upcoming releases.
+name `agent-proxy`; use `thinkeryzu-agent-proxy` in requirements for upcoming releases.
 Python imports and the command name are unchanged.
 
 After the one-time Trusted Publisher setup and first PyPI release:
 
 ```bash
-uv tool install agentproxy
+uv tool install thinkeryzu-agent-proxy
 agent-proxy --help
-uvx --from agentproxy agent-proxy --help
+uvx --from thinkeryzu-agent-proxy agent-proxy --help
 ```
 
-For a project environment, use `uv pip install agentproxy` or
-`pip install agentproxy`. Pin with `agentproxy==<VERSION>` when needed.
+For a project environment, use `uv pip install thinkeryzu-agent-proxy` or
+`pip install thinkeryzu-agent-proxy`. Pin with `thinkeryzu-agent-proxy==<VERSION>` when needed.
 The agent binaries must still be installed and authenticated separately.
 The existing GitHub release is available now:
 

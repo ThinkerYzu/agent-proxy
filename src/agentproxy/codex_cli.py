@@ -58,7 +58,7 @@ _ABORT_REASONS = {
 
 def _version() -> str:
     try:
-        return metadata.version("agentproxy")
+        return metadata.version("thinkeryzu-agent-proxy")
     except metadata.PackageNotFoundError:
         return "0"
 
