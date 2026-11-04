@@ -17,10 +17,11 @@ module docstrings for the reasoning — `turn_tracker.py` on what moves a turn,
 
 ## Status
 
-Published release: **v0.2.0**. The v0.3.0 release was withdrawn at the
-maintainer's request. This checkout retains the structured-question and
-permission-approval implementation; see [notes](https://github.com/ThinkerYzu/agent-proxy/blob/master/RELEASE-NOTES.md) for details.
-It runs:
+**v0.3.1** adds structured questions and client permission approvals, and is
+the first PyPI release as `thinkeryzu-agent-proxy`. The command remains
+`agent-proxy` and Python imports remain `agentproxy`. See the
+[release notes](https://github.com/ThinkerYzu/agent-proxy/blob/master/RELEASE-NOTES.md)
+for changes since v0.2.0. The earlier v0.3.0 release was withdrawn.
 
 ```bash
 echo '{"type":"submit","text":"Reply with exactly: PONG"}' | agent-proxy
@@ -58,8 +59,7 @@ Both clients have migrated — [r2d2box](https://github.com/ThinkerYzu/r2d2box),
 which [agent-desktop-env](https://github.com/ThinkerYzu/agent-desktop-env)
 mounts, and a second client that is not public — so claudejson is retired.
 
-This checkout adds structured agent questions for both backends. The withdrawn
-v0.3.0 tag is unavailable; these features are absent from v0.2.0.
+v0.3.1 adds structured agent questions for both backends.
 Use `agent-proxy --user-input` (or add `--agent codex`) with a client that
 supports the new `input_request` / `answer` exchange. Questions expire after
 24 hours by default; configure seconds with `AGENTPROXY_INPUT_TIMEOUT_S`.
@@ -72,7 +72,7 @@ native permission checks and ask through the client's choice-prompt flow.
 The flag implies `--user-input`. Permission prompts show the operation and
 Allow once / Deny choices, with the same configurable 24-hour deadline.
 Dismissal and expiry deny. See [permission approvals](https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md#permission-approvals)
-for backend policies and supported approval types. This feature is also absent from the published v0.2.0 release.
+for backend policies and supported approval types. Permission choices are available in v0.3.1.
 
 ## Installing
 
@@ -80,32 +80,36 @@ The Claude backend requires **Claude Code ≥ 2.1.221** for its explicit
 `--autocompact 1m` launch default; caller overrides are described in
 [API.md](https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md#invocation).
 
-The PyPI distribution name is **`thinkeryzu-agent-proxy`**; the command remains
-**`agent-proxy`**. PyPI publishing is integrated for future authorized releases,
-but this repository has not uploaded a package there yet. uv uses PyPI and
-needs no separate publication step. Older GitHub tags used the distribution
-name `agent-proxy`; use `thinkeryzu-agent-proxy` in requirements for upcoming releases.
-Python imports and the command name are unchanged.
-
-After the one-time Trusted Publisher setup and first PyPI release:
+The PyPI distribution is **`thinkeryzu-agent-proxy`**; the command is
+**`agent-proxy`**. uv uses PyPI and needs no separate publication step.
 
 ```bash
 uv tool install thinkeryzu-agent-proxy
 agent-proxy --help
+```
+
+Run without a permanent tool installation:
+
+```bash
 uvx --from thinkeryzu-agent-proxy agent-proxy --help
 ```
 
 For a project environment, use `uv pip install thinkeryzu-agent-proxy` or
-`pip install thinkeryzu-agent-proxy`. Pin with `thinkeryzu-agent-proxy==<VERSION>` when needed.
-The agent binaries must still be installed and authenticated separately.
-The existing GitHub release is available now:
+`pip install thinkeryzu-agent-proxy`. Pin with
+`thinkeryzu-agent-proxy==0.3.1` when needed. Claude/Codex must be installed and
+authenticated separately.
+
+Older GitHub tags used distribution metadata named `agent-proxy`; update
+requirements to `thinkeryzu-agent-proxy` for current releases. Python imports
+and the command name are unchanged. GitHub also provides a wheel, source
+archive and installable tag:
 
 ```bash
-pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
+pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.3.1'
 ```
 
-[RELEASING.md](https://github.com/ThinkerYzu/agent-proxy/blob/master/RELEASING.md) covers Trusted Publisher setup, release validation,
-publication to PyPI/GitHub and withdrawal behavior.
+[RELEASING.md](https://github.com/ThinkerYzu/agent-proxy/blob/master/RELEASING.md)
+covers Trusted Publisher setup, validation, publication and withdrawal.
 
 ## Commands
 

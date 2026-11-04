@@ -5,9 +5,9 @@ and the installed command is **`agent-proxy`**. uv installs packages from PyPI;
 there is no separate uv registry. Older GitHub tags used distribution metadata
 named `agent-proxy`; dependencies for upcoming releases must use `thinkeryzu-agent-proxy`.
 
-PyPI publishing is integrated but has not yet been used by this repository.
-The v0.3.0 GitHub release remains withdrawn. Changing this workflow does not
-publish a version or restart that release.
+v0.3.1 is the first PyPI release. The earlier v0.3.0 GitHub release remains
+withdrawn; do not recreate that tag. Pushing a new authorized version tag starts
+publication to PyPI and then GitHub.
 
 ## Workflow
 
@@ -26,14 +26,13 @@ uv and the new artifact/setup actions are pinned in release.yml.
 
 ## One-time Trusted Publisher setup
 
-The maintainer reports the `thinkeryzu-agent-proxy` publisher is pending.
-The fields below document that registration and can be used to verify it.
-Before the first PyPI release:
+The publisher identity below is used by this repository. To set up or repair
+it, configure it through the owning PyPI account:
 
 1. Sign in to the maintainer's PyPI account and open
    [pending publishers](https://pypi.org/manage/account/publishing/).
-   Configure a pending publisher for a new project (or an existing publisher
-   if the project has since been created under your control):
+   Use a pending publisher for a new project, or the existing project's
+   Publishing settings once the first release has created it:
 
    | Field | Value |
    |---|---|
@@ -73,8 +72,8 @@ GitHub release job from running.
 2. Choose a version, update `pyproject.toml` and
    `src/agentproxy/__init__.py`, and write `RELEASE-NOTES.md`.
    The first line must be exactly `# agent-proxy v<VERSION>` with no withdrawn
-   or draft suffix. The current withdrawn v0.3.0 notes deliberately fail this
-   check. Do not reuse a withdrawn release without a new explicit decision.
+   or draft suffix. A withdrawn or draft heading deliberately fails this check.
+   Do not reuse a withdrawn release without a new explicit decision.
 3. Validate locally, building into an empty output directory:
 
    ```bash
@@ -117,10 +116,9 @@ CI runs offline tests and drained replay on Python 3.11–3.14 on pushes/PRs.
 Release validation adds strict metadata checks and distribution installation
 checks. Neither replaces the live tests.
 
-## Installation after the first PyPI release
+## Installation
 
-The publisher must be configured and an authorized version uploaded before
-these registry commands work for this project:
+Published versions can be installed from PyPI using pip or uv:
 
 ```bash
 uv tool install thinkeryzu-agent-proxy
@@ -132,10 +130,10 @@ pip install thinkeryzu-agent-proxy
 
 Use `thinkeryzu-agent-proxy==<VERSION>` instead of `thinkeryzu-agent-proxy` to pin a release.
 Claude/Codex are separately installed binaries; pip/uv cannot install or sign
-in to them. The existing published GitHub tag remains available now:
+in to them. GitHub tags remain an alternative:
 
 ```bash
-pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
+pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.3.1'
 ```
 
 ## Cancelling or withdrawing
