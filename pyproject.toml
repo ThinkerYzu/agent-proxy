@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-proxy"
+name = "agentproxy"
 version = "0.3.0"
 description = "Turn-aware JSON stream around an interactive claude TUI or codex app-server."
 requires-python = ">=3.11"
@@ -14,6 +14,11 @@ dependencies = [
     "pyte>=0.8.2",
     "ptyprocess>=0.7",
 ]
+
+[project.urls]
+Source = "https://github.com/ThinkerYzu/agent-proxy"
+Documentation = "https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md"
+Issues = "https://github.com/ThinkerYzu/agent-proxy/issues"
 
 [project.optional-dependencies]
 dev = [

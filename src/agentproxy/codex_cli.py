@@ -58,7 +58,7 @@ _ABORT_REASONS = {
 
 def _version() -> str:
     try:
-        return metadata.version("agent-proxy")
+        return metadata.version("agentproxy")
     except metadata.PackageNotFoundError:
         return "0"
 

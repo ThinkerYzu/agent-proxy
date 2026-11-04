@@ -6,12 +6,12 @@ wraps `codex app-server` instead, behind the same protocol. It replaces claudejs
 earlier unpublished wrapper, inheriting its pty and transcript machinery and
 replacing its turn accounting.
 
-[API.md](API.md) is the wire contract — every command, every message, and what
+[API.md](https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md) is the wire contract — every command, every message, and what
 a client may assume about the order. Read it first if you are writing a client.
 
 The design documents that argue *why* the protocol has this shape are not
 published with the code. What is here is meant to stand on its own: API.md for
-the contract, [RELEASING.md](RELEASING.md) for cutting a version, and the
+the contract, [RELEASING.md](https://github.com/ThinkerYzu/agent-proxy/blob/master/RELEASING.md) for cutting a version, and the
 module docstrings for the reasoning — `turn_tracker.py` on what moves a turn,
 `fallback.py` on why a marker alone cannot be relied on to end one.
 
@@ -19,7 +19,7 @@ module docstrings for the reasoning — `turn_tracker.py` on what moves a turn,
 
 Published release: **v0.2.0**. The v0.3.0 release was withdrawn at the
 maintainer's request. This checkout retains the structured-question and
-permission-approval implementation; see [notes](RELEASE-NOTES.md) for details.
+permission-approval implementation; see [notes](https://github.com/ThinkerYzu/agent-proxy/blob/master/RELEASE-NOTES.md) for details.
 It runs:
 
 ```bash
@@ -43,13 +43,13 @@ can name the session before it types anything. `ready` is always the first
 message and always carries a real `session_id`, including for `--continue`,
 a bare `--resume`, and `--fork-session`. Keep that id and `agent-proxy
 --resume <id>` picks the conversation up in a later process; see
-[API.md](API.md#sessions) for the full table.
+[API.md](https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md#sessions) for the full table.
 
 `agent-proxy --agent codex` runs `codex app-server` as the inner agent
 instead, signed in with ChatGPT; the client reads the same stream, and
 `ready` says `"agent": "codex"`. Its arguments are mapped onto codex's own
 or refused, and a few counts read differently, since codex keeps no list of
-background commands: see [API.md](API.md#the-codex-agent).
+background commands: see [API.md](https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md#the-codex-agent).
 
 Every requirement, constraint and success criterion that can be checked
 without a client has a test naming it, in `tests/requirements/`.
@@ -64,31 +64,48 @@ Use `agent-proxy --user-input` (or add `--agent codex`) with a client that
 supports the new `input_request` / `answer` exchange. Questions expire after
 24 hours by default; configure seconds with `AGENTPROXY_INPUT_TIMEOUT_S`.
 Claude input support requires Claude Code >= 2.1.316. See
-[API.md: User input](API.md#user-input) for the full contract and Codex setup.
+[API.md: User input](https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md#user-input) for the full contract and Codex setup.
 Existing invocations keep questions disabled.
 
 Use `agent-proxy --no-bypass-permissions` (also with `--agent codex`) to use
 native permission checks and ask through the client's choice-prompt flow.
 The flag implies `--user-input`. Permission prompts show the operation and
 Allow once / Deny choices, with the same configurable 24-hour deadline.
-Dismissal and expiry deny. See [permission approvals](API.md#permission-approvals)
+Dismissal and expiry deny. See [permission approvals](https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md#permission-approvals)
 for backend policies and supported approval types. This feature is also absent from the published v0.2.0 release.
 
 ## Installing
 
 The Claude backend requires **Claude Code ≥ 2.1.221** for its explicit
 `--autocompact 1m` launch default; caller overrides are described in
-[API.md](API.md#invocation).
+[API.md](https://github.com/ThinkerYzu/agent-proxy/blob/master/API.md#invocation).
 
-Not on PyPI: the package is useless without an agent binary it cannot declare
-as a dependency. Install from a release tag, which puts an `agent-proxy` on the
-path — the only thing a client needs from this repo:
+The PyPI distribution name is **`agentproxy`**; the command remains
+**`agent-proxy`**. PyPI publishing is integrated for future authorized releases,
+but this repository has not uploaded a package there yet. uv uses PyPI and
+needs no separate publication step. Older GitHub tags used the distribution
+name `agent-proxy`; use `agentproxy` in requirements for upcoming releases.
+Python imports and the command name are unchanged.
+
+After the one-time Trusted Publisher setup and first PyPI release:
+
+```bash
+uv tool install agentproxy
+agent-proxy --help
+uvx --from agentproxy agent-proxy --help
+```
+
+For a project environment, use `uv pip install agentproxy` or
+`pip install agentproxy`. Pin with `agentproxy==<VERSION>` when needed.
+The agent binaries must still be installed and authenticated separately.
+The existing GitHub release is available now:
 
 ```bash
 pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
 ```
 
-[RELEASING.md](RELEASING.md) covers cutting one.
+[RELEASING.md](https://github.com/ThinkerYzu/agent-proxy/blob/master/RELEASING.md) covers Trusted Publisher setup, release validation,
+publication to PyPI/GitHub and withdrawal behavior.
 
 ## Commands
 

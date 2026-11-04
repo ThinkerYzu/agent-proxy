@@ -1,62 +1,115 @@
 name: Release
 
-# Cut a release by pushing a version tag: `git tag v0.1.0 && git push origin v0.1.0`.
-# The tag must match `version` in pyproject.toml and `agentproxy.__version__` —
-# the job checks and refuses otherwise, before it builds anything.
+# A version tag is an explicit request to publish to PyPI and GitHub.
 on:
   push:
     tags: [ "v*" ]
 
 permissions:
-  contents: write        # needed to create the GitHub Release
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.12.15"
 
 jobs:
-  release:
+  build:
+    name: Build and validate distributions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
-      - name: Install and build tooling
+      - name: Install uv
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - name: Check tag, package versions and release notes
+        run: python tools/check_release.py "$GITHUB_REF_NAME"
+      - name: Install test and metadata tooling
+        run: uv pip install --system -e '.[dev]' twine
+      - name: Run offline tests
+        run: python -m pytest -q -m 'not live'
+      - name: Build distributions
+        run: uv build --no-sources
+      - name: Validate exactly the files to publish
         run: |
-          python -m pip install --upgrade pip build
-          pip install -e '.[dev]'
-
-      - name: Verify the tag matches the package version
+          python tools/check_release.py "$GITHUB_REF_NAME" --dist dist
+          python -m twine check --strict dist/*
+      - name: Test the installed wheel
         run: |
-          tag="${GITHUB_REF_NAME#v}"
-          proj="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
-          mod="$(python -c 'import agentproxy; print(agentproxy.__version__)')"
-          echo "tag=$tag  pyproject=$proj  __version__=$mod"
-          if [ "$tag" != "$proj" ] || [ "$tag" != "$mod" ]; then
-            echo "::error::tag v$tag must match pyproject ($proj) and agentproxy.__version__ ($mod)"
-            exit 1
-          fi
-
-      - name: Run tests
-        run: pytest
-
-      - name: Build sdist and wheel
-        run: python -m build
-
-      # Clients install the wheel and get a `agent-proxy` binary; nothing else in
-      # this job would notice if the package were missing from it, since the
-      # tests above run against the editable checkout. Install the wheel alone in
-      # a clean environment and drive it through a whole recorded session.
-      - name: Verify the wheel is a working proxy
+          uv venv --python 3.11 /tmp/release-wheel
+          uv pip install --python /tmp/release-wheel/bin/python dist/*.whl pytest
+          /tmp/release-wheel/bin/python -m pytest -q -m 'not live'
+          /tmp/release-wheel/bin/python -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-drained
+      - name: Test the installed source distribution
         run: |
-          python -m venv /tmp/relcheck
-          /tmp/relcheck/bin/pip install --quiet dist/*.whl
-          test -x /tmp/relcheck/bin/agent-proxy
-          /tmp/relcheck/bin/python -m agentproxy.replay \
-            tests/fixtures/synthetic-session.jsonl --assert-drained
+          uv venv --python 3.11 /tmp/release-source
+          uv pip install --python /tmp/release-source/bin/python dist/*.tar.gz pytest
+          /tmp/release-source/bin/python -m pytest -q -m 'not live'
+          /tmp/release-source/bin/agent-proxy --help
+          /tmp/release-source/bin/python -m agentproxy.replay tests/fixtures/synthetic-session.jsonl --assert-drained
+      - name: Test uv tool installation
+        env:
+          UV_TOOL_DIR: ${{ runner.temp }}/release-tools
+          UV_TOOL_BIN_DIR: ${{ runner.temp }}/release-bin
+        run: |
+          uv tool install --python 3.11 dist/*.whl
+          "$UV_TOOL_BIN_DIR/agent-proxy" --help
+      - name: Store validated distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
 
-      # Use the runner's gh CLI (no third-party action / Node runtime) to publish.
-      - name: Create the GitHub Release with artifacts
+  pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - name: Download validated distributions
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: distributions
+          path: dist
+      - name: Publish with Trusted Publishing
+        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*
+
+  github:
+    name: Publish GitHub Release
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Download the same validated distributions
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: distributions
+          path: dist
+      - name: Create the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --notes-file RELEASE-NOTES.md
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --notes-file RELEASE-NOTES.md

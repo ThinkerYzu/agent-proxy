@@ -74,7 +74,10 @@ pip install 'git+https://github.com/ThinkerYzu/agent-proxy@v0.2.0'
 ```
 
 The v0.3.0 wheel and source distribution have been withdrawn.
-No PyPI publication is planned.
+Future releases are configured to publish the `agentproxy` distribution to
+PyPI through Trusted Publishing, then attach the same files to GitHub Releases.
+The console command remains `agent-proxy`. Publisher setup is still required;
+this integration does not republish the withdrawn v0.3.0 release.
 
 ## Validation
 
